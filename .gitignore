@@ -1,0 +1,6 @@
+zig-out/
+outputs/
+test-artifacts/
+work/
+.DS_Store
+.*/

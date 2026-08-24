@@ -1,0 +1,38 @@
+# MEML 当前产品能力的可执行自记忆记录。
+# 记录 Agent 如何基于上下文检索策略、执行操作、回写结果并形成可追溯经验。
+
+observe meml provides contextual-agent-memory product success at 20260824 as product
+observe meml routes candidates token-normalized-retrieval success at 20260824 as routing
+observe meml persists semantic-state-with-revision product success at 20260824 as persistence
+observe meml validates strict-source-and-state-boundaries product success at 20260824 as safety
+
+assert meml kernel owns-identity-ranking-conflicts-and-explanations architecture confidence 0.98 as kernel
+assert meml providers generate-candidates-only architecture confidence 0.98 as providers
+assert meml source supports-line-diagnostics-links-unlinks-and-verified-feedback language confidence 0.99 as source_feedback
+assert meml persistence provides-semantic-and-index-journals durability confidence 0.99 as durable_state
+assert meml feedback-verifier rejects-untrusted-results safety confidence 0.99 as trusted_feedback
+assert meml feedback-policy configures-domain-reinforcement-and-penalties safety confidence 0.99 as feedback_policy
+assert meml evaluation supports-annotated-multitask-and-context-drift-suites quality confidence 0.99 as evaluation_suite
+assert meml remote-transport preserves-revision-cas durability confidence 0.99 as remote_cas
+assert meml calibrated-provider uses-transparent-versioned-parameters retrieval confidence 0.95 as calibrated
+assert meml learned-embeddings-and-model-checkpoints not-persisted boundary confidence 0.99 as model_boundary
+
+# Agent 应用闭环：策略被检索后，真实执行结果以 evidence 写回目标，
+# 形成 supports 或 contradicts 关系，并调整下次上下文检索的置信度与强度。
+assert meml strategy-feedback improves-future-contextual-selection agent confidence 0.8 as feedback_loop
+feedback feedback_loop success none actor trusted-agent receipt receipt-self-memory at 20260824
+link feedback_loop supports kernel weight 1
+link durable_state supports safety weight 1
+
+# 默认 observe 只记录经验；整合路径形成长期结构。
+observe meml default-observe keeps-derived-structure-unchanged product success at 20260824
+assert meml consolidation derives-memory-belief-concept-procedure-and-artifacts lifecycle confidence 0.99 as consolidation
+assert meml atomic-consolidation restores-complete-runtime-state safety confidence 0.99 as atomicity
+assert meml revision-cas rejects-stale-writers durability confidence 0.99 as cas
+
+# 可复核的 Provider 验收与当前限制。
+observe meml evaluation applies-recall-mrr-ndcg-quality-gates product success at 20260824
+assert meml full-index-shards-and-production-remote-service pending boundary confidence 0.99 as roadmap
+
+signals embedding metadata reranker neural calibrated
+neural consolidate deterministic

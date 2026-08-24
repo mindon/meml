@@ -1,0 +1,67 @@
+# MEML 演示：一个 Agent 如何观察、检索、强化并整合用户的工具偏好。
+#
+# 运行方式：zig build demo
+# （demo 程序会读取本文件，逐条打印每个 activate 的排名与信号解释）
+#
+# 本文件同时展示了 MEML 的可执行源语言：
+#   observe / assert / context / activate / link / feedback / signals /
+#   consolidate / neural consolidate deterministic
+
+# —— 阶段 1：observe 记录体验（经验级，带时间戳）——
+# 重复出现的体验会在整合阶段被推导为信念（belief）。
+observe user uses typescript frontend success at 10
+observe user uses python data success at 20
+observe user uses zig systems success at 30
+observe user prefers local-inference privacy success at 40
+observe user uses typescript frontend success at 50
+observe user uses python data success at 60
+observe user prefers local-inference privacy success at 70
+
+# —— 阶段 2：assert 声明更高层的结论（带置信度，可用 as 打标签）——
+assert user uses zig systems confidence 0.9 as zig_use
+assert user uses typescript frontend confidence 0.8 as ts_use
+assert user uses python data confidence 0.8 as py_use
+# 一条相互冲突的结论，用于演示矛盾（contradiction）信号如何压低排名。
+assert user uses python systems confidence 0.4 as py_systems
+
+# —— 阶段 3：context 定义检索上下文（目标、情境、查询、偏好）——
+context performance {
+    goal: "pick the right tool"
+    situation: systems
+    query: uses
+    preferred: zig
+}
+
+context data {
+    goal: "analyze data"
+    situation: data
+    query: uses
+    preferred: python
+}
+
+context privacy {
+    goal: "keep data local"
+    situation: privacy
+    query: prefers
+    preferred: local-inference
+}
+
+# 开启内核元数据信号与确定性 neural 检索信号。
+signals metadata neural
+
+# —— 阶段 4：activate 上下文检索 ——
+# 相同记忆集合，因目标 / 情境 / 偏好不同而产生不同排序。
+activate performance top 5
+activate data top 5
+activate privacy top 5
+
+# —— 阶段 5：真实执行结果以 evidence 写回（feedback），并记录关系 ——
+feedback zig_use success none actor trusted-agent receipt receipt-zig-build at 80
+link zig_use contradicts py_systems weight 1
+
+# 强化后再次检索，观察 zig 的置信度与排名上升。
+activate performance top 5
+
+# —— 阶段 6：整合（consolidate）+ 确定性 neural 整合 ——
+consolidate
+neural consolidate deterministic

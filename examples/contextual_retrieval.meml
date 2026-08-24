@@ -1,0 +1,40 @@
+# MEML 可执行的上下文检索示例。
+# 语法在执行前完成解析与静态校验。
+
+observe user uses typescript browser success at 10
+observe user uses python data success at 20
+
+context browser {
+    goal: "build browser extension"
+    situation: browser
+    query: uses
+    preferred: typescript
+}
+
+context data {
+    goal: "analyze data"
+    situation: data
+    query: uses
+    preferred: python
+}
+
+# 相同记忆集合会因查询、目标、情境与偏好而产生不同排序。
+# 激活解释可包含语义、词法、时间、图关系、过程、偏好、目标、
+# 置信度与冲突信号。
+activate browser top 5
+activate data top 5
+
+# 可替换信号 provider 提供外部评分，但不改变内核排序合约。
+signals embedding metadata reranker
+
+# 标签和 link 支持在源程序中显式记录关系。
+assert user uses python legacy confidence 0.9 as legacy_use
+assert user uses typescript browser confidence 0.7 as browser_use
+link browser_use contradicts legacy_use weight 1
+# 策略执行的真实结果写回为 evidence，并影响后续按浏览器情境的选择。
+feedback browser_use success none actor trusted-agent receipt receipt-browser-run-30 at 30
+activate browser top 5
+
+# 确定性 neural provider 提议带来源的内核原生 belief，并作为检索信号启用。
+neural consolidate deterministic
+signals neural
