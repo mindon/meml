@@ -52,4 +52,17 @@ pub fn build(b: *std.Build) void {
     const demo_run = b.addRunArtifact(demo);
     const demo_step = b.step("demo", "Run the MEML end-to-end demo (examples/demo.meml)");
     demo_step.dependOn(&demo_run.step);
+
+    const cli = b.addExecutable(.{
+        .name = "meml-cli",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(cli);
+    const cli_run = b.addRunArtifact(cli);
+    const cli_step = b.step("cli", "Run the MEML JSON-lines CLI (see src/cli.zig for the request protocol)");
+    cli_step.dependOn(&cli_run.step);
 }

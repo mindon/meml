@@ -65,6 +65,8 @@ Runtime ────────> indexed symbolic backend (default)
 
 需要 Zig 0.17。
 
+库（`meml`）、命令行（`meml-cli`）与源语言脚本（`.meml`）的完整操作手册见 [`USAGE.md`](USAGE.md)。
+
 ```sh
 zig fmt build.zig src/*.zig
 zig build

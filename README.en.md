@@ -65,6 +65,8 @@ See [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md) for beh
 
 Requires Zig 0.17.
 
+The full operations guide for the library (`meml`), the CLI (`meml-cli`), and source-language scripts (`.meml`) is in [`USAGE.en.md`](USAGE.en.md).
+
 ```sh
 zig fmt build.zig src/*.zig
 zig build
