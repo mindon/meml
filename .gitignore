@@ -4,3 +4,4 @@ test-artifacts/
 work/
 .DS_Store
 .*/
+meml.state*
