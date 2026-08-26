@@ -1,7 +1,7 @@
 ---
 name: meml-agent-memory
 description: Retrieves explainable long-term MEML memory before planning and records only host-verified execution outcomes. Use when historical preferences, tool outcomes, project context, prior failures, or reusable procedures could improve an agent task.
-compatibility: Requires a configured local meml-cli bridge and the meml_recall tool.
+compatibility: Requires a configured local meml bridge and the meml_recall tool.
 ---
 
 # MEML Agent Memory

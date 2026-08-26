@@ -42,7 +42,7 @@ MEML 的内核保存通用、可解释的记录；量子计算、AI for Science 
 
 ## JSON-lines 协议
 
-`meml-cli` 的 `observe` 支持传统字段与下列可选结构化字段：
+`meml` 的 `observe` 支持传统字段与下列可选结构化字段：
 
 ```json
 {
@@ -63,8 +63,8 @@ MEML 的内核保存通用、可解释的记录；量子计算、AI for Science 
 运行示例：
 
 ```sh
-zig build cli -- --file examples/quantum-feedback.jsonl
-zig build cli -- --file examples/science-workflow.jsonl
+zig build run -- --file examples/quantum-feedback.jsonl
+zig build run -- --file examples/science-workflow.jsonl
 ```
 
 ## 持久化与安全

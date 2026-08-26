@@ -1,11 +1,11 @@
 # MEML 使用指南
 
-本文是 MEML 的操作手册，覆盖三种接入方式：**Zig 库（`meml`）**、**命令行桥接（`meml-cli`）** 和 **源语言脚本（`.meml`）**。
+本文是 MEML 的操作手册，覆盖三种接入方式：**Zig 库（`meml`）**、**命令行桥接（`meml`）** 和 **源语言脚本（`.meml`）**。
 
 | 入口 | 产物 | 适用场景 |
 |---|---|---|
 | Zig 库 | `src/meml.zig` | 宿主本身是 Zig，直接链接，零桥接成本 |
-| CLI | `zig-out/bin/meml-cli` | 任意语言（Python / TypeScript / Go …）通过子进程调用 |
+| CLI | `zig-out/bin/meml` | 任意语言（Python / TypeScript / Go …）通过子进程调用 |
 | 源语言 | `*.meml` 文件 | 把「记忆策略」写成可编辑、可版本化、可事务执行的脚本 |
 
 三者共享同一个 `Runtime` 内核：语义、评分、排序、冲突规则与激活解释完全一致，只是调用形态不同。
@@ -17,9 +17,9 @@
 需要 Zig 0.17。
 
 ```sh
-zig build          # 安装 meml 与 meml-cli 到 zig-out/bin/
+zig build          # 安装 meml-example 与 meml 到 zig-out/bin/
 zig build test     # 运行测试
-zig build run      # 运行最小库示例
+zig build example  # 运行最小库示例
 zig build demo     # 运行 examples/demo.meml 端到端演示
 zig build bench -Doptimize=ReleaseFast   # 运行确定性检索基准
 ```
@@ -278,17 +278,17 @@ meml.neural.retrievalProvider()
 
 ---
 
-## 3. 命令行桥接（`meml-cli`）
+## 3. 命令行桥接（`meml`）
 
-`meml-cli` 是一个 JSON-lines 桥接：**每行一个 JSON 请求进，每行一个 JSON 响应出**，状态在同一进程内跨请求保留。
+`meml` 是一个 JSON-lines 桥接：**每行一个 JSON 请求进，每行一个 JSON 响应出**，状态在同一进程内跨请求保留。
 
 ### 3.1 三种运行模式
 
 | 模式 | 命令 | 说明 |
 |---|---|---|
-| 单请求 | `meml-cli '<json>'` | 处理单个请求后退出，**每次都是全新状态** |
-| 常驻 REPL | `meml-cli`（stdin 逐行） | 状态跨请求保留，适合 agent 常驻子进程 |
-| 文件 | `meml-cli --file reqs.jsonl` | 按行批量处理 |
+| 单请求 | `meml '<json>'` | 处理单个请求后退出，**每次都是全新状态** |
+| 常驻 REPL | `meml`（stdin 逐行） | 状态跨请求保留，适合 agent 常驻子进程 |
+| 文件 | `meml --file reqs.jsonl` | 按行批量处理 |
 
 响应格式：`{"ok":true,...}` 或 `{"ok":false,"error":"..."}`。
 
@@ -345,7 +345,7 @@ printf '%s\n' \
   '{"op":"set_verifier","trusted_actors":["workbuddy"],"receipt_prefix":"receipt-"}' \
   '{"op":"feedback","target":1,"outcome":"success","failure_class":"none","actor":"workbuddy","receipt":"receipt-1","timestamp":80}' \
   '{"op":"persist","path":"meml.state","atomic":true}' \
-| ./zig-out/bin/meml-cli
+| ./zig-out/bin/meml
 ```
 
 ### 3.4 Python 常驻进程示例（agent 集成）
@@ -354,7 +354,7 @@ printf '%s\n' \
 import subprocess, json
 
 proc = subprocess.Popen(
-    ["zig-out/bin/meml-cli"],
+    ["zig-out/bin/meml"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
 )
 
@@ -445,7 +445,7 @@ var report = try meml.source.execute(&runtime, script_text, allocator);
 
 ```sh
 # 通过 CLI 执行脚本
-./zig-out/bin/meml-cli '{"op":"exec","program":"observe user prefers typescript frontend success at 10"}'
+./zig-out/bin/meml '{"op":"exec","program":"observe user prefers typescript frontend success at 10"}'
 ```
 
 > `exec` 执行的脚本若包含 `feedback`，需先在同一进程内 `set_verifier`。

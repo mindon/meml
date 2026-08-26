@@ -1,19 +1,19 @@
 # MEML Agent Integrations
 
-这些集成通过常驻 `meml-cli` 的 JSON Lines 协议给非 Zig Agent 提供本地、可解释的长期记忆。它们只暴露只读 `meml_recall` 给模型；写入执行反馈必须由宿主的已验证工具结果生命周期调用，不能相信模型自报的成功或失败。
+这些集成通过常驻 `meml` 的 JSON Lines 协议给非 Zig Agent 提供本地、可解释的长期记忆。它们只暴露只读 `meml_recall` 给模型；写入执行反馈必须由宿主的已验证工具结果生命周期调用，不能相信模型自报的成功或失败。
 
 ## 前置条件
 
 ```sh
 cd /Users/mindon/dev/playground/meml
 zig build
-export MEML_BIN="$PWD/zig-out/bin/meml-cli"
+export MEML_BIN="$PWD/zig-out/bin/meml"
 ```
 
 可选环境变量：
 
 - `MEML_STATE_PATH`：覆盖每个集成的本地状态文件路径。
-- `MEML_BIN`：覆盖 `meml-cli` 的绝对路径；生产环境应明确设置。
+- `MEML_BIN`：覆盖 `meml` 的绝对路径；生产环境应明确设置。
 
 状态文件包含持久化记忆，须存放在受限目录，不能提交到版本库。
 
@@ -47,7 +47,7 @@ pnpm dsh web --patch /Users/mindon/dev/playground/meml/integrations/deepseek-har
 
 `integrations/mcp/meml-mcp.mjs` 是本地 stdio MCP server，`integrations/codex/config.toml` 提供可复制的 `[mcp_servers.meml]` 配置模板。替换模板中的绝对路径后，放入 `~/.codex/config.toml` 或受信任项目的 `.codex/config.toml`。
 
-该配置只公开 `meml_recall`，并以 `default_tools_approval_mode = "approve"` 标记为可无确认的只读工具。`MEML_BIN` 必须指向已构建的 `meml-cli`；`MEML_STATE_PATH` 可使用项目内相对路径保存状态。
+该配置只公开 `meml_recall`，并以 `default_tools_approval_mode = "approve"` 标记为可无确认的只读工具。`MEML_BIN` 必须指向已构建的 `meml`；`MEML_STATE_PATH` 可使用项目内相对路径保存状态。
 
 安装 Skill：复制 `integrations/codex/skills/meml-agent-memory/` 至 `$HOME/.agents/skills/meml-agent-memory/`，或 `<repo>/.agents/skills/meml-agent-memory/`。
 
@@ -56,7 +56,7 @@ pnpm dsh web --patch /Users/mindon/dev/playground/meml/integrations/deepseek-har
 Claude Code 插件位于 `integrations/claude-code/meml-plugin/`，包含插件 manifest、同名 Skill 和独立 MCP server。临时开发加载：
 
 ```sh
-export MEML_BIN="/absolute/path/to/meml/zig-out/bin/meml-cli"
+export MEML_BIN="/absolute/path/to/meml/zig-out/bin/meml"
 claude --plugin-dir /Users/mindon/dev/playground/meml/integrations/claude-code/meml-plugin
 ```
 

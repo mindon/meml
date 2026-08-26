@@ -6,7 +6,7 @@ import readline from "node:readline";
 const MAX_REQUEST_BYTES = 60 * 1024;
 const actor = process.env.MEML_ACTOR ?? "mcp-host";
 const receiptPrefix = process.env.MEML_RECEIPT_PREFIX ?? "mcp-verified-";
-const binary = process.env.MEML_BIN ?? "meml-cli";
+const binary = process.env.MEML_BIN ?? "meml";
 const statePath = resolve(process.env.MEML_STATE_PATH ?? ".meml/mcp.state");
 
 class MemlBridge {

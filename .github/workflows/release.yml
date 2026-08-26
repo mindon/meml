@@ -1,4 +1,4 @@
-name: Release meml-cli
+name: Release meml
 
 on:
   push:
@@ -55,28 +55,28 @@ jobs:
           version: 0.17.0
       - name: Build release binary
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
-      - name: Package meml-cli
+      - name: Package meml
         env:
           ASSET: ${{ matrix.asset }}
           ARCHIVE: ${{ matrix.archive }}
         run: |
           mkdir -p dist
           if [[ "$ASSET" == *windows* ]]; then
-            binary="meml-cli.exe"
+            binary="meml.exe"
           else
-            binary="meml-cli"
+            binary="meml"
           fi
           cp "zig-out/bin/$binary" "dist/$binary"
           if [[ "$ARCHIVE" == "zip" ]]; then
-            (cd dist && zip "meml-cli-$ASSET.zip" "$binary")
+            (cd dist && zip "meml-$ASSET.zip" "$binary")
           else
-            tar -C dist -czf "dist/meml-cli-$ASSET.tar.gz" "$binary"
+            tar -C dist -czf "dist/meml-$ASSET.tar.gz" "$binary"
           fi
           rm "dist/$binary"
       - uses: actions/upload-artifact@v4
         with:
-          name: meml-cli-${{ matrix.asset }}
-          path: dist/meml-cli-${{ matrix.asset }}.${{ matrix.archive }}
+          name: meml-${{ matrix.asset }}
+          path: dist/meml-${{ matrix.asset }}.${{ matrix.archive }}
           if-no-files-found: error
 
   release:
@@ -92,7 +92,7 @@ jobs:
           mkdir -p release
           find dist -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release/ \;
           cd release
-          sha256sum meml-cli-* > SHA256SUMS
+          sha256sum meml-* > SHA256SUMS
       - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}

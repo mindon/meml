@@ -126,7 +126,7 @@ MEML 的排序、整合、演进全部**确定性**，因此：
 ```bash
 git clone <repo> && cd meml
 
-zig build run      # 最小示例
+zig build example  # 最小示例
 zig build demo     # 端到端演示：观察 → 检索 → 反馈 → 整合 → 持久化恢复
 zig build test     # 单元 + 集成 + 因果演进自审计
 zig build bench    # 确定性检索基准

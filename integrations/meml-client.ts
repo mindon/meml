@@ -38,7 +38,7 @@ export class MemlClient {
   private responses: Array<(line: JsonObject) => void> = [];
 
   constructor(options: MemlClientOptions) {
-    this.binary = options.binary ?? process.env.MEML_BIN ?? resolve(process.cwd(), "zig-out/bin/meml-cli");
+    this.binary = options.binary ?? process.env.MEML_BIN ?? resolve(process.cwd(), "zig-out/bin/meml");
     this.statePath = resolve(options.statePath);
     this.actor = options.actor;
     this.receiptPrefix = options.receiptPrefix;

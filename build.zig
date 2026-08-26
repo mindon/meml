@@ -4,18 +4,18 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "meml",
+    const example = b.addExecutable(.{
+        .name = "meml-example",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/meml.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    b.installArtifact(exe);
+    b.installArtifact(example);
 
-    const run = b.addRunArtifact(exe);
-    const run_step = b.step("run", "Run the MEML context-aware memory example");
+    const run = b.addRunArtifact(example);
+    const run_step = b.step("example", "Run the MEML context-aware memory example");
     run_step.dependOn(&run.step);
 
     const tests = b.addTest(.{
@@ -53,16 +53,16 @@ pub fn build(b: *std.Build) void {
     const demo_step = b.step("demo", "Run the MEML end-to-end demo (examples/demo.meml)");
     demo_step.dependOn(&demo_run.step);
 
-    const cli = b.addExecutable(.{
-        .name = "meml-cli",
+    const exe = b.addExecutable(.{
+        .name = "meml",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    b.installArtifact(cli);
-    const cli_run = b.addRunArtifact(cli);
-    const cli_step = b.step("cli", "Run the MEML JSON-lines CLI (see src/cli.zig for the request protocol)");
+    b.installArtifact(exe);
+    const cli_run = b.addRunArtifact(exe);
+    const cli_step = b.step("run", "Run the MEML JSON-lines CLI (see src/cli.zig for the request protocol)");
     cli_step.dependOn(&cli_run.step);
 }

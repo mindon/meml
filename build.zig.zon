@@ -1,0 +1,16 @@
+.{
+    .name = .meml,
+    .version = "0.1.0",
+    .fingerprint = 0x3243c1902476d340,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+        "README.en.md",
+        "USAGE.md",
+        "USAGE.en.md",
+    },
+}

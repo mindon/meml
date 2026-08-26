@@ -1,11 +1,11 @@
 # MEML Usage Guide
 
-This is the operations manual for MEML, covering three integration paths: the **Zig library (`meml`)**, the **command-line bridge (`meml-cli`)**, and **source-language scripts (`.meml`)**.
+This is the operations manual for MEML, covering three integration paths: the **Zig library (`meml`)**, the **command-line bridge (`meml`)**, and **source-language scripts (`.meml`)**.
 
 | Entry point | Artifact | Best for |
 |---|---|---|
 | Zig library | `src/meml.zig` | Hosts that are themselves Zig, linking directly with zero bridge cost |
-| CLI | `zig-out/bin/meml-cli` | Any language (Python / TypeScript / Go …) calling through a subprocess |
+| CLI | `zig-out/bin/meml` | Any language (Python / TypeScript / Go …) calling through a subprocess |
 | Source language | `*.meml` files | Writing memory policy as editable, versionable, transactionally-executed scripts |
 
 All three share the same `Runtime` kernel: semantics, scoring, ordering, conflict rules, and activation explanations are identical; only the calling shape differs.
@@ -17,9 +17,9 @@ All three share the same `Runtime` kernel: semantics, scoring, ordering, conflic
 Requires Zig 0.17.
 
 ```sh
-zig build          # installs meml and meml-cli into zig-out/bin/
+zig build          # installs meml-example and meml into zig-out/bin/
 zig build test     # runs the tests
-zig build run      # runs the minimal library example
+zig build example  # runs the minimal library example
 zig build demo     # runs the examples/demo.meml end-to-end demo
 zig build bench -Doptimize=ReleaseFast   # runs the deterministic retrieval benchmark
 ```
@@ -276,17 +276,17 @@ meml.neural.retrievalProvider()
 
 ---
 
-## 3. Command-line bridge (`meml-cli`)
+## 3. Command-line bridge (`meml`)
 
-`meml-cli` is a JSON-lines bridge: **one JSON request in per line, one JSON response out per line**, with state preserved across requests within the same process.
+`meml` is a JSON-lines bridge: **one JSON request in per line, one JSON response out per line**, with state preserved across requests within the same process.
 
 ### 3.1 Three run modes
 
 | Mode | Command | Description |
 |---|---|---|
-| Single request | `meml-cli '<json>'` | Processes a single request and exits; **fresh state each time** |
-| Long-running REPL | `meml-cli` (stdin, line by line) | State persists across requests; ideal for an agent's long-running subprocess |
-| File | `meml-cli --file reqs.jsonl` | Batch processing, line by line |
+| Single request | `meml '<json>'` | Processes a single request and exits; **fresh state each time** |
+| Long-running REPL | `meml` (stdin, line by line) | State persists across requests; ideal for an agent's long-running subprocess |
+| File | `meml --file reqs.jsonl` | Batch processing, line by line |
 
 Response format: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 
@@ -343,7 +343,7 @@ printf '%s\n' \
   '{"op":"set_verifier","trusted_actors":["workbuddy"],"receipt_prefix":"receipt-"}' \
   '{"op":"feedback","target":1,"outcome":"success","failure_class":"none","actor":"workbuddy","receipt":"receipt-1","timestamp":80}' \
   '{"op":"persist","path":"meml.state","atomic":true}' \
-| ./zig-out/bin/meml-cli
+| ./zig-out/bin/meml
 ```
 
 ### 3.4 Python long-running process example (agent integration)
@@ -352,7 +352,7 @@ printf '%s\n' \
 import subprocess, json
 
 proc = subprocess.Popen(
-    ["zig-out/bin/meml-cli"],
+    ["zig-out/bin/meml"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
 )
 
@@ -443,7 +443,7 @@ var report = try meml.source.execute(&runtime, script_text, allocator);
 
 ```sh
 # Execute a script via the CLI
-./zig-out/bin/meml-cli '{"op":"exec","program":"observe user prefers typescript frontend success at 10"}'
+./zig-out/bin/meml '{"op":"exec","program":"observe user prefers typescript frontend success at 10"}'
 ```
 
 > A script run through `exec` that contains `feedback` requires `set_verifier` first within the same process.

@@ -917,9 +917,9 @@ const help_text =
     \\MEML CLI — a JSON-lines bridge to the MEML agent memory runtime.
     \\
     \\Usage:
-    \\  meml-cli                 read JSON requests from stdin (one per line) until EOF
-    \\  meml-cli '<json>'        process a single JSON request and exit
-    \\  meml-cli --file <path>   read JSON requests from a file (one per line)
+    \\  meml                 read JSON requests from stdin (one per line) until EOF
+    \\  meml '<json>'        process a single JSON request and exit
+    \\  meml --file <path>   read JSON requests from a file (one per line)
     \\
     \\Each request is a JSON object with an "op" field. Each response is one JSON
     \\line: {"ok":true,...} or {"ok":false,"error":"..."}.

@@ -66,24 +66,24 @@ Runtime ────────> indexed symbolic backend (default)
 
 需要 Zig 0.17。
 
-库（`meml`）、命令行（`meml-cli`）与源语言脚本（`.meml`）的完整操作手册见 [`USAGE.md`](USAGE.md)。
+库（`meml`）、命令行（`meml`）与源语言脚本（`.meml`）的完整操作手册见 [`USAGE.md`](USAGE.md)。
 
 ### Agent 插件与 Skill
 
 [`integrations/`](integrations/README.md) 提供 Pi Agent、DeepSeek Harness、WorkBuddy、Codex 与 Claude Code 的本地集成：每个集成注册只读 `meml_recall`，并提供 `meml-agent-memory` Skill。执行结果只能由宿主的已验证工具生命周期回写，模型不能自报反馈。
 
-推送 `vMAJOR.MINOR.PATCH` 标签会触发 GitHub Actions，发布 Linux（x86_64 / aarch64）、macOS（x86_64 / aarch64）和 Windows（x86_64）的 `meml-cli` 压缩包及 `SHA256SUMS`。也可通过 Actions 的 `workflow_dispatch` 手动指定版本标签。
+推送 `vMAJOR.MINOR.PATCH` 标签会触发 GitHub Actions，发布 Linux（x86_64 / aarch64）、macOS（x86_64 / aarch64）和 Windows（x86_64）的 `meml` 压缩包及 `SHA256SUMS`。也可通过 Actions 的 `workflow_dispatch` 手动指定版本标签。
 
 ```sh
 zig fmt build.zig src/*.zig
 zig build
 zig build test
-zig build run
+zig build example
 zig build demo
 zig build bench -Doptimize=ReleaseFast
 ```
 
-`zig build run` 运行最小示例：写入两条经验，添加元数据和神经检索信号，按浏览器情境激活记忆，并保存 `meml.state`。该文件是本地运行数据，不是仓库中的版本演进工件；需要长期保存时应由部署环境管理，并通过 `Runtime.recover()` 恢复。
+`zig build example` 运行最小示例：写入两条经验，添加元数据和神经检索信号，按浏览器情境激活记忆，并保存 `meml.state`。该文件是本地运行数据，不是仓库中的版本演进工件；需要长期保存时应由部署环境管理，并通过 `Runtime.recover()` 恢复。
 
 `zig build bench -Doptimize=ReleaseFast` 会在 10K、100K 和 1M 条确定性经验上报告写入吞吐、查询耗时、路由候选数、评分数、返回数、Recall@20、MRR 与 NDCG。10M 规模需由调用方根据机器资源自行启用；仓库不附带固定性能结论。
 

@@ -65,18 +65,18 @@ See [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md) for beh
 
 Requires Zig 0.17.
 
-The full operations guide for the library (`meml`), the CLI (`meml-cli`), and source-language scripts (`.meml`) is in [`USAGE.en.md`](USAGE.en.md).
+The full operations guide for the library (`meml`), the CLI (`meml`), and source-language scripts (`.meml`) is in [`USAGE.en.md`](USAGE.en.md).
 
 ```sh
 zig fmt build.zig src/*.zig
 zig build
 zig build test
-zig build run
+zig build example
 zig build demo
 zig build bench -Doptimize=ReleaseFast
 ```
 
-`zig build run` runs a minimal example: writes two experiences, adds metadata and neural retrieval signals, activates memory for a browser context, and saves `meml.state`. That file is local runtime data, not a versioned repository artifact; deployments that need long-term retention should manage it and restore it via `Runtime.recover()`.
+`zig build example` runs a minimal example: writes two experiences, adds metadata and neural retrieval signals, activates memory for a browser context, and saves `meml.state`. That file is local runtime data, not a versioned repository artifact; deployments that need long-term retention should manage it and restore it via `Runtime.recover()`.
 
 `zig build bench -Doptimize=ReleaseFast` reports write throughput, query latency, routed candidate count, scored count, returned count, Recall@20, MRR, and NDCG over 10K, 100K, and 1M deterministic experiences. The 10M scale must be enabled by the caller according to available machine resources; the repository ships no fixed performance conclusions.
 
