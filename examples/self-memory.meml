@@ -11,25 +11,36 @@ assert meml providers generate-candidates-only architecture confidence 0.98 as p
 assert meml source supports-line-diagnostics-links-unlinks-and-verified-feedback language confidence 0.99 as source_feedback
 assert meml persistence provides-semantic-and-index-journals durability confidence 0.99 as durable_state
 assert meml feedback-verifier rejects-untrusted-results safety confidence 0.99 as trusted_feedback
-assert meml feedback-policy configures-domain-reinforcement-and-penalties safety confidence 0.99 as feedback_policy
+assert meml plasticity-policy configures-verified-bounded-state-adjustments safety confidence 0.99 as plasticity_policy
 assert meml evaluation supports-annotated-multitask-and-context-drift-suites quality confidence 0.99 as evaluation_suite
 assert meml remote-transport preserves-revision-cas durability confidence 0.99 as remote_cas
 assert meml calibrated-provider uses-transparent-versioned-parameters retrieval confidence 0.95 as calibrated
 assert meml learned-embeddings-and-model-checkpoints not-persisted boundary confidence 0.99 as model_boundary
 assert meml provides-generic-structured-evidence-metrics-scopes-artifacts-and-lineage capability architecture confidence 0.99 as structured_kernel
 assert meml keeps-domain-entities-in-adapters-not-kernel boundary architecture confidence 0.99 as adapter_boundary
-assert meml persists-only-meml13-and-rejects-old-state-formats state durability confidence 0.99 as meml13
+assert meml persists-only-meml14-and-rejects-old-state-formats state durability confidence 0.99 as meml14
+assert meml provides-verified-audited-cognitive-state-transitions dynamics capability confidence 0.99 as dynamic_kernel
+assert meml derives-stability-attractors-and-bounded-state-propagation dynamics capability confidence 0.99 as dynamics_stability
+assert meml predicts-procedure-outcomes-from-cutoff-bounded-feedback dynamics capability confidence 0.99 as procedure_prediction
+assert meml quality-gates-explicit-procedure-candidates-by-stability-and-history dynamics capability confidence 0.99 as procedure_selection
+assert meml compares-explicit-procedures-by-conservative-multi-objective-evidence dynamics capability confidence 0.99 as procedure_comparison
 assert meml evaluates-structured-relevance-and-feasibility quality-gate quality confidence 0.99 as structured_evaluation
 
 # Agent 应用闭环：策略被检索后，真实执行结果以 evidence 写回目标，
 # 形成 supports 或 contradicts 关系，并调整下次上下文检索的置信度与强度。
 assert meml strategy-feedback improves-future-contextual-selection agent confidence 0.8 as feedback_loop
 feedback feedback_loop success none actor trusted-agent receipt receipt-self-memory at 20260824
+transition dynamic_kernel stabilize 0.05 actor trusted-agent receipt receipt-dynamics at 20260824 reason verified-architecture
 link feedback_loop supports kernel weight 1
 link durable_state supports safety weight 1
 link structured_kernel supports kernel weight 1
 link adapter_boundary supports providers weight 1
-link meml13 supports durable_state weight 1
+link meml14 supports durable_state weight 1
+link dynamic_kernel supports kernel weight 1
+link dynamics_stability supports dynamic_kernel weight 1
+link procedure_prediction supports dynamic_kernel weight 1
+link procedure_selection supports dynamic_kernel weight 1
+link procedure_comparison supports procedure_selection weight 1
 link structured_evaluation supports evaluation_suite weight 1
 
 # 默认 observe 只记录经验；整合路径形成长期结构。

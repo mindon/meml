@@ -66,6 +66,30 @@ fn lineageScore(store: *const store_mod.Store, id: u64) f64 {
     return @min(1, @as(f64, @floatFromInt(count)) * 0.25);
 }
 
+/// Computes a discrete, reproducible attractor classification from durable
+/// evidence and audited state transitions. It never creates another mutable
+/// truth: callers can always recompute it from the semantic store.
+pub fn stability(store: *const store_mod.Store, node: model.Node) model.Stability {
+    var support: usize = 0;
+    var contradiction: usize = 0;
+    for (store.relations.items) |relation| {
+        if (relation.to != node.id) continue;
+        if (relation.kind == .supports) support += 1;
+        if (relation.kind == .contradicts) contradiction += 1;
+    }
+    var transitions: usize = 0;
+    for (store.transition_records.items) |record| {
+        if (record.target == node.id) transitions += 1;
+    }
+    if (node.cognitive_state == .contested) return .{ .state = .contested, .score = 0, .support = support, .contradiction = contradiction, .transitions = transitions };
+    const evidence = @as(f64, @floatFromInt(support)) / @as(f64, @floatFromInt(support + contradiction + 1));
+    const history = @min(1, @as(f64, @floatFromInt(transitions)) / 3);
+    const lineage = lineageScore(store, node.id);
+    const score = std.math.clamp(node.confidence * node.strength * 0.5 + evidence * 0.25 + history * 0.15 + lineage * 0.1, 0, 1);
+    const state: model.AttractorState = if (score >= 0.75 and support >= 2 and contradiction == 0) .stable else if (score >= 0.4 or support > contradiction) .emerging else .transient;
+    return .{ .state = state, .score = score, .support = support, .contradiction = contradiction, .transitions = transitions };
+}
+
 fn graphScore(store: *const store_mod.Store, id: u64, context: model.Context) f64 {
     for (store.relations.items) |relation| {
         if (relation.from != id and relation.to != id) continue;
@@ -111,9 +135,10 @@ pub fn signals(store: *const store_mod.Store, node: model.Node, context: model.C
         .metric = metricQuality(store, node.id),
         .structure = structureScore(store, node.id, context.structure),
         .lineage = lineageScore(store, node.id),
+        .stability = stability(store, node).score,
         .contradiction = contradictionScore(store, node.id, context),
     };
-    if (node.belief_state == .contested and context.resolve_conflicts) output.confidence *= 0.6;
+    if (node.cognitive_state == .contested and context.resolve_conflicts) output.confidence *= 0.6;
     return output;
 }
 

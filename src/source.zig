@@ -65,6 +65,17 @@ pub const Feedback = struct {
     timestamp: i64,
 };
 
+pub const Transition = struct {
+    target: []const u8,
+    kind: model.TransitionKind,
+    target_state: ?model.CognitiveState = null,
+    amount: f64 = 0,
+    actor: []const u8,
+    receipt: []const u8,
+    timestamp: i64,
+    reason: []const u8,
+};
+
 pub const ContextDecl = struct {
     name: []const u8,
     value: model.Context,
@@ -86,6 +97,7 @@ pub const Statement = union(enum) {
     link: Link,
     unlink: Unlink,
     feedback: Feedback,
+    transition: Transition,
     consolidate,
     neural_consolidate,
 };
@@ -211,6 +223,26 @@ pub const Parser = struct {
                 const timestamp = try std.fmt.parseInt(i64, words.next() orelse return error.InvalidFeedback, 10);
                 if (words.next() != null) return error.UnexpectedToken;
                 try append(&program, allocator, .{ .feedback = .{ .target = target, .outcome = outcome, .failure_class = failure_class, .actor = actor, .receipt = receipt, .timestamp = timestamp } }, statement_span);
+            } else if (std.mem.eql(u8, keyword, "transition")) {
+                const target = words.next() orelse return error.InvalidTransition;
+                const kind = std.meta.stringToEnum(model.TransitionKind, words.next() orelse return error.InvalidTransition) orelse return error.InvalidTransition;
+                var target_state: ?model.CognitiveState = null;
+                var amount: f64 = 0;
+                if (kind == .set_state) {
+                    target_state = std.meta.stringToEnum(model.CognitiveState, words.next() orelse return error.InvalidTransition) orelse return error.InvalidTransition;
+                } else {
+                    amount = try std.fmt.parseFloat(f64, words.next() orelse return error.InvalidTransition);
+                }
+                if (!std.mem.eql(u8, words.next() orelse return error.InvalidTransition, "actor")) return error.InvalidTransition;
+                const actor = words.next() orelse return error.InvalidTransition;
+                if (!std.mem.eql(u8, words.next() orelse return error.InvalidTransition, "receipt")) return error.InvalidTransition;
+                const receipt = words.next() orelse return error.InvalidTransition;
+                if (!std.mem.eql(u8, words.next() orelse return error.InvalidTransition, "at")) return error.InvalidTransition;
+                const timestamp = try std.fmt.parseInt(i64, words.next() orelse return error.InvalidTransition, 10);
+                if (!std.mem.eql(u8, words.next() orelse return error.InvalidTransition, "reason")) return error.InvalidTransition;
+                const reason = words.next() orelse return error.InvalidTransition;
+                if (words.next() != null) return error.UnexpectedToken;
+                try append(&program, allocator, .{ .transition = .{ .target = target, .kind = kind, .target_state = target_state, .amount = amount, .actor = actor, .receipt = receipt, .timestamp = timestamp, .reason = reason } }, statement_span);
             } else if (std.mem.eql(u8, keyword, "signals")) {
                 while (words.next()) |name| try append(&program, allocator, .{ .signal = try signalFor(name) }, statement_span);
             } else if (std.mem.eql(u8, keyword, "consolidate")) {
@@ -231,6 +263,7 @@ pub const ExecutionReport = struct {
     observed: usize = 0,
     asserted: usize = 0,
     feedback: usize = 0,
+    transitions: usize = 0,
     consolidated: usize = 0,
     neural_artifacts: usize = 0,
     activations: std.ArrayList(std.ArrayList(model.Activation)),
@@ -292,6 +325,10 @@ pub fn execute(runtime: *runtime_mod.Runtime, input: []const u8, allocator: std.
                 _ = try runtime.recordFeedback(.{ .target = labels.get(feedback.target) orelse return error.UnknownLabel, .outcome = feedback.outcome, .failure_class = feedback.failure_class, .actor = feedback.actor, .receipt = feedback.receipt, .timestamp = feedback.timestamp });
                 report.feedback += 1;
             },
+            .transition => |transition| {
+                _ = try runtime.transition(.{ .target = labels.get(transition.target) orelse return error.UnknownLabel, .kind = transition.kind, .target_state = transition.target_state, .amount = transition.amount, .reason = transition.reason, .actor = transition.actor, .receipt = transition.receipt, .timestamp = transition.timestamp });
+                report.transitions += 1;
+            },
             .signal => |signal| try runtime.addSignalProvider(providerFor(signal)),
             .consolidate => {
                 const consolidation = try runtime.consolidateAllAtomic(.{});
@@ -340,6 +377,11 @@ pub fn check(program: *Program, allocator: std.mem.Allocator) !void {
             .link => |link| if (!labels.contains(link.from) or !labels.contains(link.to) or !std.math.isFinite(link.weight) or link.weight < 0 or link.weight > 1) return error.InvalidLink,
             .unlink => |unlink| if (!labels.contains(unlink.from) or !labels.contains(unlink.to)) return error.InvalidLink,
             .feedback => |feedback| if (!labels.contains(feedback.target) or feedback.actor.len == 0 or feedback.receipt.len == 0 or (feedback.outcome == .success and feedback.failure_class != .none) or (feedback.outcome == .failure and feedback.failure_class == .none)) return error.InvalidFeedback,
+            .transition => |transition| {
+                if (!labels.contains(transition.target) or transition.reason.len == 0 or transition.actor.len == 0 or transition.receipt.len == 0 or !std.math.isFinite(transition.amount) or transition.amount < 0 or transition.amount > 1) return error.InvalidTransition;
+                if (transition.kind == .set_state and (transition.target_state == null or transition.amount != 0)) return error.InvalidTransition;
+                if (transition.kind != .set_state and (transition.target_state != null or transition.amount == 0)) return error.InvalidTransition;
+            },
             .activate => |command| {
                 if (!contexts.contains(command.context_name)) return error.UnknownContext;
                 if (command.limit == 0 or command.limit > 1_000) return error.InvalidActivationLimit;

@@ -1,6 +1,46 @@
 pub const Kind = enum { experience, evidence, claim, memory, belief, concept, procedure, context };
 pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes };
-pub const BeliefState = enum { active, contested, superseded, archived };
+
+/// Lifecycle state for every cognitive record. It is intentionally domain
+/// neutral: the host owns actions while MEML controls only memory dynamics.
+pub const CognitiveState = enum { active, contested, superseded, archived };
+
+/// Bounded, auditable transformations of cognitive state. There is no generic
+/// code execution: every transition is one of these kernel-owned operations.
+pub const TransitionKind = enum { set_state, reinforce, penalize, stabilize, decay };
+
+pub const TransitionInput = struct {
+    target: u64,
+    kind: TransitionKind,
+    target_state: ?CognitiveState = null,
+    amount: f64 = 0,
+    cause: ?u64 = null,
+    reason: []const u8,
+    actor: []const u8,
+    receipt: []const u8,
+    timestamp: i64,
+};
+
+/// Immutable audit of a committed transition. Before/after values make state
+/// evolution replayable and independently verifiable without trusting callers.
+pub const TransitionRecord = struct {
+    id: u64,
+    target: u64,
+    cause: ?u64,
+    kind: TransitionKind,
+    prior_state: CognitiveState,
+    next_state: CognitiveState,
+    prior_confidence: f64,
+    next_confidence: f64,
+    prior_strength: f64,
+    next_strength: f64,
+    timestamp: i64,
+    reason: []const u8,
+    actor: []const u8,
+    receipt: []const u8,
+};
+
+pub const ActivationPolicy = enum { active_only, include_contested, include_historical };
 
 /// Versioned execution or experiment boundary. Keys such as `model`, `dataset`,
 /// `backend`, and `code` are conventions rather than kernel-owned domain types.
@@ -62,7 +102,7 @@ pub const Node = struct {
     timestamp: i64,
     confidence: f64,
     strength: f64,
-    belief_state: BeliefState = .active,
+    cognitive_state: CognitiveState = .active,
     support_count: u32 = 0,
     contradiction_count: u32 = 0,
     last_confirmed_at: i64 = 0,
@@ -107,16 +147,182 @@ pub const FeedbackVerifier = struct {
     }
 };
 
-/// Per-domain feedback policy. Success reinforcement and failure multipliers
-/// are explicit runtime configuration, not hidden hard-coded learning rules.
-pub const FeedbackPolicy = struct {
-    success_increment: f64 = 0.1,
-    timeout_multiplier: f64 = 0.95,
-    transport_multiplier: f64 = 0.9,
-    tool_error_multiplier: f64 = 0.8,
-    invalid_result_multiplier: f64 = 0.7,
-    unknown_multiplier: f64 = 0.85,
-    neutral_multiplier: f64 = 1,
+/// Host-owned zero-trust boundary for state transitions. The kernel never
+/// treats a caller-provided receipt as authoritative on its own.
+pub const TransitionVerifier = struct {
+    context: *anyopaque,
+    verifyFn: *const fn (*anyopaque, TransitionInput) anyerror!void,
+    pub fn verify(self: TransitionVerifier, input: TransitionInput) !void {
+        return self.verifyFn(self.context, input);
+    }
+};
+
+/// A bounded plasticity response selected only after verified feedback. The
+/// kernel may change one lifecycle state and apply one numeric adjustment; it
+/// never executes host actions or arbitrary code.
+pub const PlasticityRule = struct {
+    state: ?CognitiveState = null,
+    adjustment: ?TransitionKind = null,
+    amount: f64 = 0,
+};
+
+/// Host-owned configuration for how verified outcomes reshape future cognitive
+/// dynamics. It is intentionally runtime configuration rather than persisted
+/// memory state, so deployment policy and authorization stay outside MEML14.
+pub const PlasticityPolicy = struct {
+    success: PlasticityRule = .{ .adjustment = .reinforce, .amount = 0.1 },
+    timeout: PlasticityRule = .{ .state = .contested, .adjustment = .penalize, .amount = 0.05 },
+    transport: PlasticityRule = .{ .state = .contested, .adjustment = .penalize, .amount = 0.1 },
+    tool_error: PlasticityRule = .{ .state = .contested, .adjustment = .penalize, .amount = 0.2 },
+    invalid_result: PlasticityRule = .{ .state = .contested, .adjustment = .penalize, .amount = 0.3 },
+    policy_denied: PlasticityRule = .{},
+    unauthorized: PlasticityRule = .{},
+    cancelled: PlasticityRule = .{},
+    unknown: PlasticityRule = .{ .state = .contested, .adjustment = .penalize, .amount = 0.15 },
+};
+
+/// Derived, explainable stability class. It is computed from evidence,
+/// transitions, conflicts, and current state; it is not a second mutable truth.
+pub const AttractorState = enum { transient, emerging, stable, contested };
+pub const Stability = struct {
+    state: AttractorState,
+    score: f64,
+    support: usize,
+    contradiction: usize,
+    transitions: usize,
+};
+
+/// Bounded kernel-owned graph propagation. Providers still route initial
+/// candidates; the kernel applies this budget, lifecycle filtering, and score.
+pub const PropagationBudget = struct {
+    seed_limit: usize = 64,
+    max_hops: u8 = 0,
+    edge_limit: usize = 256,
+    candidate_limit: usize = 128,
+};
+
+/// Historical, scope-compatible estimate for a procedure. This is an empirical
+/// outcome summary, not a world-model claim or an instruction to take action.
+pub const ProcedurePrediction = struct {
+    procedure: u64,
+    compatible: bool,
+    samples: usize,
+    successes: usize,
+    failures: usize,
+    success_probability: f64,
+    evidence_coverage: f64,
+};
+
+/// A conservative gate for deciding whether an explicitly supplied procedure
+/// has enough compatible, stable, verified history to be recommended. This is
+/// host runtime policy and is not persisted as memory state.
+pub const ProcedureSelectionQualityGate = struct {
+    min_stability: f64 = 0.75,
+    min_samples: usize = 3,
+    min_success_probability: f64 = 0.5,
+    min_evidence_coverage: f64 = 0.5,
+    require_active: bool = true,
+    require_scope_compatibility: bool = true,
+};
+
+pub const ProcedureSelectionStatus = struct {
+    active: bool,
+    scope_compatible: bool,
+    stability_sufficient: bool,
+    samples_sufficient: bool,
+    success_probability_sufficient: bool,
+    evidence_coverage_sufficient: bool,
+
+    pub fn eligible(self: ProcedureSelectionStatus) bool {
+        return self.active and self.scope_compatible and self.stability_sufficient and self.samples_sufficient and self.success_probability_sufficient and self.evidence_coverage_sufficient;
+    }
+};
+
+/// Read-only comparison for a caller-provided candidate set. Null score/rank
+/// means the candidate was rejected by the gate and never entered comparison.
+pub const ProcedureSelection = struct {
+    procedure: u64,
+    stability: Stability,
+    history: ProcedurePrediction,
+    status: ProcedureSelectionStatus,
+    counterfactual_score: ?f64 = null,
+    rank: ?usize = null,
+};
+
+pub const max_procedure_objectives = 8;
+
+/// The caller must declare every comparison dimension. Metric selectors use an
+/// exact name/unit pair, so the kernel never assumes what “cost”, “error”, or
+/// “fidelity” means and never performs implicit unit conversion.
+pub const ProcedureMetricTarget = struct { name: []const u8, unit: []const u8 };
+
+pub const ProcedureObjectiveTarget = union(enum) {
+    stability,
+    success_probability,
+    evidence_coverage,
+    metric: ProcedureMetricTarget,
+};
+
+pub const ProcedureObjective = struct {
+    target: ProcedureObjectiveTarget,
+    direction: MetricDirection,
+    weight: f64,
+    /// maximize: conservative_value >= hard_limit; minimize: <= hard_limit.
+    hard_limit: ?f64 = null,
+};
+
+/// Caller-owned, non-persistent policy for a read-only comparison over an
+/// explicit candidate list. It cannot trigger retrieval, propagation, tools,
+/// or an action.
+pub const ProcedureComparisonPolicy = struct {
+    require_active: bool = true,
+    require_scope_compatibility: bool = true,
+    min_samples: usize = 3,
+    objectives: []const ProcedureObjective,
+};
+
+pub const ProcedureComparisonRejection = enum {
+    none,
+    inactive,
+    scope_incompatible,
+    insufficient_samples,
+    missing_metric,
+    metric_direction_mismatch,
+    hard_limit_failed,
+};
+
+pub const ProcedureObjectiveAssessment = struct {
+    observed_value: ?f64 = null,
+    uncertainty: ?f64 = null,
+    conservative_value: ?f64 = null,
+    normalized_value: ?f64 = null,
+    hard_limit_satisfied: bool = false,
+    rejection: ProcedureComparisonRejection = .none,
+};
+
+pub const ProcedureComparisonStatus = struct {
+    active: bool,
+    scope_compatible: bool,
+    samples_sufficient: bool,
+    objectives_sufficient: bool,
+
+    pub fn eligible(self: ProcedureComparisonStatus) bool {
+        return self.active and self.scope_compatible and self.samples_sufficient and self.objectives_sufficient;
+    }
+};
+
+/// A bounded empirical counterfactual: “among only these candidates, with only
+/// the declared objectives, which past evidence is preferable?” Null score/rank
+/// denotes a rejected candidate, not an unknown future outcome.
+pub const ProcedureComparison = struct {
+    procedure: u64,
+    stability: Stability,
+    history: ProcedurePrediction,
+    status: ProcedureComparisonStatus,
+    assessment_count: usize,
+    assessments: [max_procedure_objectives]ProcedureObjectiveAssessment = undefined,
+    counterfactual_score: ?f64 = null,
+    rank: ?usize = null,
 };
 
 pub const ConsolidationRecord = struct {
@@ -163,6 +369,7 @@ pub const Weights = struct {
     metric: f64 = 0.10,
     structure: f64 = 0.12,
     lineage: f64 = 0.08,
+    stability: f64 = 0.12,
     contradiction: f64 = 0.12,
     external: f64 = 0.18,
 };
@@ -176,6 +383,9 @@ pub const Context = struct {
     preferred: []const u8 = "",
     scopes: []const Scope = &.{},
     structure: ?Structure = null,
+    activation_policy: ActivationPolicy = .active_only,
+    minimum_stability: f64 = 0,
+    propagation: PropagationBudget = .{},
     resolve_conflicts: bool = true,
     weights: Weights = .{},
 };
@@ -193,11 +403,12 @@ pub const Signals = struct {
     metric: f64 = 0,
     structure: f64 = 0,
     lineage: f64 = 0,
+    stability: f64 = 0,
     contradiction: f64 = 0,
     external: f64 = 0,
 
     pub fn total(self: Signals, weights: Weights) f64 {
-        const positive = self.semantic * weights.semantic + self.lexical * weights.lexical + self.temporal * weights.temporal + self.causal * weights.causal + self.procedural * weights.procedural + self.preference * weights.preference + self.goal * weights.goal + self.confidence * weights.confidence + self.scope * weights.scope + self.metric * weights.metric + self.structure * weights.structure + self.lineage * weights.lineage;
+        const positive = self.semantic * weights.semantic + self.lexical * weights.lexical + self.temporal * weights.temporal + self.causal * weights.causal + self.procedural * weights.procedural + self.preference * weights.preference + self.goal * weights.goal + self.confidence * weights.confidence + self.scope * weights.scope + self.metric * weights.metric + self.structure * weights.structure + self.lineage * weights.lineage + self.stability * weights.stability;
         return positive - self.contradiction * weights.contradiction + self.external * weights.external;
     }
 };

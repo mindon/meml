@@ -11,13 +11,14 @@ pub const Store = struct {
     neural_states: std.ArrayList(model.NeuralState),
     learned_signals: std.ArrayList(model.LearnedSignalState),
     feedback_records: std.ArrayList(model.FeedbackRecord),
+    transition_records: std.ArrayList(model.TransitionRecord),
     scoped_records: std.ArrayList(model.ScopedRecord),
     metric_records: std.ArrayList(model.MetricRecord),
     artifact_records: std.ArrayList(model.ArtifactRecord),
     structure_records: std.ArrayList(model.StructureRecord),
 
     pub fn init(allocator: std.mem.Allocator) Store {
-        return .{ .allocator = allocator, .nodes = .empty, .relations = .empty, .consolidations = .empty, .fingerprint_groups = .empty, .fingerprint_members = .empty, .neural_states = .empty, .learned_signals = .empty, .feedback_records = .empty, .scoped_records = .empty, .metric_records = .empty, .artifact_records = .empty, .structure_records = .empty };
+        return .{ .allocator = allocator, .nodes = .empty, .relations = .empty, .consolidations = .empty, .fingerprint_groups = .empty, .fingerprint_members = .empty, .neural_states = .empty, .learned_signals = .empty, .feedback_records = .empty, .transition_records = .empty, .scoped_records = .empty, .metric_records = .empty, .artifact_records = .empty, .structure_records = .empty };
     }
 
     pub fn deinitNode(allocator: std.mem.Allocator, entry: model.Node) void {
@@ -44,6 +45,12 @@ pub const Store = struct {
             self.allocator.free(record.receipt);
         }
         self.feedback_records.deinit(self.allocator);
+        for (self.transition_records.items) |record| {
+            self.allocator.free(record.reason);
+            self.allocator.free(record.actor);
+            self.allocator.free(record.receipt);
+        }
+        self.transition_records.deinit(self.allocator);
         for (self.scoped_records.items) |record| {
             self.allocator.free(record.scope.key);
             self.allocator.free(record.scope.value);
@@ -89,7 +96,7 @@ pub const Store = struct {
             .timestamp = entry.timestamp,
             .confidence = entry.confidence,
             .strength = entry.strength,
-            .belief_state = entry.belief_state,
+            .cognitive_state = entry.cognitive_state,
             .support_count = entry.support_count,
             .contradiction_count = entry.contradiction_count,
             .last_confirmed_at = entry.last_confirmed_at,
@@ -120,6 +127,7 @@ pub const Store = struct {
         try out.neural_states.appendSlice(allocator, self.neural_states.items);
         for (self.learned_signals.items) |state| try out.upsertLearnedSignal(state.provider, state.weight, state.bias, state.version);
         for (self.feedback_records.items) |record| try out.recordFeedback(.{ .evidence = record.evidence, .target = record.target, .outcome = record.outcome, .failure_class = record.failure_class, .actor = record.actor, .receipt = record.receipt });
+        for (self.transition_records.items) |record| try out.recordTransition(record);
         for (self.scoped_records.items) |record| try out.addScope(record.node, record.scope);
         for (self.metric_records.items) |record| try out.addMetric(record.node, record.metric);
         for (self.artifact_records.items) |record| try out.addArtifact(record.node, record.artifact);
@@ -284,6 +292,31 @@ pub const Store = struct {
         try self.feedback_records.append(self.allocator, .{ .evidence = input.evidence, .target = input.target, .outcome = input.outcome, .failure_class = input.failure_class, .actor = actor, .receipt = receipt });
     }
 
+    pub fn recordTransition(self: *Store, input: model.TransitionRecord) !void {
+        const reason = try self.allocator.dupe(u8, input.reason);
+        errdefer self.allocator.free(reason);
+        const actor = try self.allocator.dupe(u8, input.actor);
+        errdefer self.allocator.free(actor);
+        const receipt = try self.allocator.dupe(u8, input.receipt);
+        errdefer self.allocator.free(receipt);
+        try self.transition_records.append(self.allocator, .{
+            .id = input.id,
+            .target = input.target,
+            .cause = input.cause,
+            .kind = input.kind,
+            .prior_state = input.prior_state,
+            .next_state = input.next_state,
+            .prior_confidence = input.prior_confidence,
+            .next_confidence = input.next_confidence,
+            .prior_strength = input.prior_strength,
+            .next_strength = input.next_strength,
+            .timestamp = input.timestamp,
+            .reason = reason,
+            .actor = actor,
+            .receipt = receipt,
+        });
+    }
+
     pub fn upsertNeuralState(self: *Store, state: model.NeuralState) !void {
         for (self.neural_states.items) |*existing| {
             if (existing.artifact == state.artifact) {
@@ -396,6 +429,11 @@ pub const Store = struct {
             const evidence = self.constNode(record.evidence) orelse return error.BadFile;
             if (evidence.kind != .evidence or self.constNode(record.target) == null or record.actor.len == 0 or record.receipt.len == 0) return error.BadFile;
             if ((record.outcome == .success and record.failure_class != .none) or (record.outcome == .failure and record.failure_class == .none)) return error.BadFile;
+        }
+        var previous_transition: u64 = 0;
+        for (self.transition_records.items) |record| {
+            if (record.id == 0 or record.id <= previous_transition or self.constNode(record.target) == null or (record.cause != null and self.constNode(record.cause.?) == null) or !validScaled(record.prior_confidence) or !validScaled(record.next_confidence) or !validScaled(record.prior_strength) or !validScaled(record.next_strength) or record.prior_confidence < 0 or record.prior_confidence > 1 or record.next_confidence < 0 or record.next_confidence > 1 or record.prior_strength < 0 or record.prior_strength > 1 or record.next_strength < 0 or record.next_strength > 1 or !validText(record.reason, 512) or !validText(record.actor, 128) or !validText(record.receipt, 512)) return error.BadFile;
+            previous_transition = record.id;
         }
     }
 };

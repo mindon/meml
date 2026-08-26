@@ -160,19 +160,11 @@ fn indexedCandidates(ctx: *anyopaque, store: *const store_mod.Store, context: mo
     if (!has_token) return all(ctx, store, context, allocator);
     return ids;
 }
+/// Graph routing deliberately returns only indexed seeds. The kernel-owned
+/// retrieval pipeline performs bounded, lifecycle-aware relation propagation so
+/// providers cannot bypass activation budgets or final-state semantics.
 fn graph(ctx: *anyopaque, store: *const store_mod.Store, context: model.Context, allocator: std.mem.Allocator) !std.ArrayList(u64) {
-    var ids = try indexedCandidates(ctx, store, context, allocator);
-    var seen = std.AutoHashMap(u64, void).init(allocator);
-    defer seen.deinit();
-    for (ids.items) |id| try seen.put(id, {});
-    for (store.relations.items) |relation| if (seen.contains(relation.from) or seen.contains(relation.to)) {
-        const other = if (seen.contains(relation.from)) relation.to else relation.from;
-        if (!seen.contains(other)) {
-            try seen.put(other, {});
-            try ids.append(allocator, other);
-        }
-    };
-    return ids;
+    return indexedCandidates(ctx, store, context, allocator);
 }
 fn vectorCandidates(ctx: *anyopaque, store: *const store_mod.Store, context: model.Context, allocator: std.mem.Allocator) !std.ArrayList(u64) {
     const indexes: *Indexes = @ptrCast(@alignCast(ctx));

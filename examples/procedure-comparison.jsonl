@@ -1,0 +1,15 @@
+{"op":"set_verifier","trusted_actors":["trusted-agent"],"receipt_prefix":"receipt-"}
+{"op":"set_plasticity_policy","success":{"adjustment":"reinforce","amount":0.25}}
+{"op":"observe","kind":"procedure","subject":"agent","predicate":"uses","object":"fast-process","context":"current","result":"ready","timestamp":1,"scopes":[{"key":"environment","value":"current"}],"metrics":[{"name":"cost","value":80,"unit":"usd","direction":"minimize"},{"name":"latency","value":10,"unit":"ms","uncertainty":1,"direction":"minimize"}]}
+{"op":"observe","kind":"procedure","subject":"agent","predicate":"uses","object":"cheap-process","context":"current","result":"ready","timestamp":1,"scopes":[{"key":"environment","value":"current"}],"metrics":[{"name":"cost","value":20,"unit":"usd","direction":"minimize"},{"name":"latency","value":30,"unit":"ms","uncertainty":1,"direction":"minimize"}]}
+{"op":"observe","kind":"procedure","subject":"agent","predicate":"uses","object":"incomplete-process","context":"current","result":"ready","timestamp":1,"scopes":[{"key":"environment","value":"current"}],"metrics":[{"name":"cost","value":5,"unit":"usd","direction":"minimize"}]}
+{"op":"feedback","target":1,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-fast-1","timestamp":10}
+{"op":"feedback","target":1,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-fast-2","timestamp":11}
+{"op":"feedback","target":1,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-fast-3","timestamp":12}
+{"op":"feedback","target":2,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-cheap-1","timestamp":20}
+{"op":"feedback","target":2,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-cheap-2","timestamp":21}
+{"op":"feedback","target":2,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-cheap-3","timestamp":22}
+{"op":"feedback","target":3,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-incomplete-1","timestamp":30}
+{"op":"feedback","target":3,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-incomplete-2","timestamp":31}
+{"op":"feedback","target":3,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-incomplete-3","timestamp":32}
+{"op":"compare_procedures","ids":[3,2,1],"scopes":[{"key":"environment","value":"current"}],"min_samples":3,"objectives":[{"target":"metric","name":"cost","unit":"usd","direction":"minimize","weight":0.2},{"target":"metric","name":"latency","unit":"ms","direction":"minimize","weight":0.8,"hard_limit":40}]}

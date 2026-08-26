@@ -131,7 +131,68 @@ _ = id;
 
 `science.Generic.adapter()` provides the same general validation boundary; `quantum.adapter()` is only an optional quantum input-normalization example. Neither may mutate `Store` directly. See [`docs/domain-memory.md`](docs/domain-memory.md).
 
-### 2.4 Core API
+### 2.4 Dynamic Cognitive State
+
+MEML changes only auditable memory state; it never chooses or executes a host Action. A host must install a `TransitionVerifier` before calling bounded `transition()`; every change is persisted as a `TransitionRecord` in `MEML14`.
+
+```zig
+runtime.setTransitionVerifier(host_transition_verifier);
+_ = try runtime.transition(.{
+    .target = procedure_id,
+    .kind = .stabilize,
+    .amount = 0.1,
+    .reason = "verified-repeat-success",
+    .actor = "trusted-runner",
+    .receipt = "verified-receipt",
+    .timestamp = now,
+});
+
+var current = try runtime.activate(.{ .query = "procedure" }, 5, a); // active only by default
+var audit = try runtime.activate(.{ .query = "procedure", .activation_policy = .include_historical }, 5, a);
+defer current.deinit(a);
+defer audit.deinit(a);
+```
+
+The bounded DSL form is `transition <label> reinforce|penalize|decay|stabilize <0..1> actor <actor> receipt <receipt> at <timestamp> reason <reason>`; for `set_state`, replace the numeric value with `active|contested|superseded|archived`. See [`docs/dynamic-memory.md`](docs/dynamic-memory.md) and [`examples/dynamic-memory.jsonl`](examples/dynamic-memory.jsonl).
+
+### 2.5 Procedure Selection Quality Gate
+
+`selectProcedures()` compares only procedure IDs explicitly supplied by the host. It never retrieves or expands candidates and never executes an Action. The gate requires active state, exact scope compatibility, stability, verified-outcome sample count, success probability, and evidence coverage; rejected candidates retain their reason dimensions but receive no rank.
+
+```zig
+var choices = try runtime.selectProcedures(
+    &.{ procedure_a, procedure_b },
+    .{ .scopes = &scopes },
+    .{ .min_stability = 0.75, .min_samples = 3, .min_success_probability = 0.6, .min_evidence_coverage = 0.5 },
+    a,
+);
+defer choices.deinit(a);
+// rank == 1 is an empirical recommendation among explicit candidates only.
+```
+
+Use `predictProcedureAt()` for cutoff-based historical prediction evaluation. `selectProcedures()` uses current cognitive state only, preventing future state from leaking into historical selection replay. The JSONL example is [`examples/procedure-selection.jsonl`](examples/procedure-selection.jsonl).
+
+### 2.6 Explicit Multi-Objective Comparison
+
+`compareProcedures()` compares only caller-provided procedure IDs and requires callers to declare every target, direction, weight, and optional hard constraint. Targets may be `stability`, `success_probability`, `evidence_coverage`, or an exact metric `name + unit`; the kernel never infers domain semantics or converts units.
+
+```zig
+const objectives = [_]meml.ProcedureObjective{
+    .{ .target = .{ .metric = .{ .name = "cost", .unit = "usd" } }, .direction = .minimize, .weight = 0.2 },
+    .{ .target = .{ .metric = .{ .name = "latency", .unit = "ms" } }, .direction = .minimize, .weight = 0.8, .hard_limit = 40 },
+};
+var comparisons = try runtime.compareProcedures(
+    &.{ fast_procedure, cheap_procedure },
+    .{ .scopes = &scopes },
+    .{ .min_samples = 3, .objectives = &objectives },
+    a,
+);
+defer comparisons.deinit(a);
+```
+
+Metric uncertainty is incorporated conservatively: maximize uses `value - uncertainty`, while minimize uses `value + uncertainty`. Candidates with missing metrics, direction conflicts, or failed constraints have no score/rank but retain per-objective rejection reasons. This API never invokes retrieval, a backend, graph expansion, a tool, or an Action. See [`examples/procedure-comparison.jsonl`](examples/procedure-comparison.jsonl).
+
+### 2.7 Core API
 
 Public methods on `Runtime` (`src/runtime.zig`):
 
@@ -144,13 +205,17 @@ Public methods on `Runtime` (`src/runtime.zig`):
 | | `infer(id) !u64` | Derive a new node from a node |
 | Relations | `link(from, kind, to, weight)` / `unlink(from, kind, to)` | Create / delete an explicit relation |
 | | `support(from, to, weight)` / `contradict(from, to)` | Support / contradict |
-| Beliefs | `setBeliefState(id, state)` / `supersedeBelief(old, replacement)` | Belief lifecycle |
+| Cognitive state | `supersedeBelief(old, replacement)` | Belief replacement; its state change is audited |
+| Dynamic transitions | `setTransitionVerifier(verifier)` / `clearTransitionVerifier()` | Host trust boundary |
+| | `transition(input) !u64` / `verifyTransitionHistory()` | Bounded state change / audit continuity |
 | Abstraction | `generalize(ids, concept) !u64` / `inferProcedure(ids, name) !u64` | Generalize a concept / procedure |
 | Retrieval | `activate(context, limit, allocator) !ArrayList(Activation)` | Contextual retrieval |
 | | `activateWithStats(context, limit, allocator) !retrieval.Result` | Retrieve and return candidate/scoring statistics |
+| Procedure decisions | `stability(id)` / `predictProcedureAt(id, context, cutoff)` | Derived stability / historical outcome estimate |
+| | `selectProcedures(ids, context, gate, allocator)` | Quality gate and empirical comparison for explicit candidates only |
 | Signals | `addSignalProvider(provider)` / `setSignalCalibration(weight, bias)` / `addCalibratedSignalProvider()` | Attach replaceable signals |
 | Feedback | `setFeedbackVerifier(verifier)` / `clearFeedbackVerifier()` | Trust boundary |
-| | `setFeedbackPolicy(policy)` / `recordFeedback(input) !u64` | Write back outcomes |
+| | `setPlasticityPolicy(policy)` / `recordFeedback(input) !u64` | Verified outcome-driven plasticity |
 | Consolidation | `consolidate()` / `consolidateAll()` / `consolidatePending(policy)` | Explicit consolidation |
 | | `consolidateWithPolicy(policy)` / `consolidateAllAtomic(policy)` / `consolidatePendingAtomic(policy)` | Policy-driven / atomic consolidation |
 | | `consolidateNeural(consolidator) !usize` | Deterministic neural consolidation |
@@ -165,7 +230,8 @@ Public methods on `Runtime` (`src/runtime.zig`):
 ```zig
 pub const Kind = enum { experience, evidence, claim, memory, belief, concept, procedure, context };
 pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes };
-pub const BeliefState = enum { active, contested, superseded, archived };
+pub const CognitiveState = enum { active, contested, superseded, archived };
+pub const TransitionKind = enum { set_state, reinforce, penalize, stabilize, decay };
 pub const Outcome = enum { success, failure };
 pub const FailureClass = enum { none, timeout, transport, tool_error, invalid_result, policy_denied, unauthorized, cancelled, unknown };
 ```
@@ -237,11 +303,14 @@ Response format: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 | `unlink` | `from,kind,to` | `{ok}` |
 | `support` | `from,to,weight` | `{ok}` |
 | `contradict` | `from,to` | `{ok}` |
-| `set_belief_state` | `id,state` | `{ok}` |
+| `transition` | `target,kind,target_state|amount,cause?,reason,actor,receipt,timestamp` | `{ok,transition}` |
 | `supersede` | `old,replacement` | `{ok}` |
 | `generalize` | `ids,concept` | `{ok,id}` |
 | `procedure` | `ids,name` | `{ok,id}` |
-| `activate` | `query,goal,user,situation,now,preferred,resolve_conflicts,limit,stats,details` | `{ok,activations}` |
+| `activate` | `query,goal,user,situation,now,preferred,scopes,structure,activation_policy,minimum_stability,propagation,resolve_conflicts,limit,stats,details` | `{ok,activations}` |
+| `predict_procedure` | `procedure,scopes?,cutoff` | `{ok,success_probability,evidence_coverage,…}` |
+| `select_procedures` | `ids,scopes?,gate?` | `{ok,selections}`; compares explicit candidates only |
+| `compare_procedures` | `ids,scopes?,min_samples?,objectives` | `{ok,comparisons}`; conservative multi-objective comparison with explicit targets |
 | `feedback` | `target,outcome,failure_class,actor,receipt,timestamp` | `{ok,evidence}` |
 | `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,stats}` |
 | `auto_consolidate` | `enable,…` | `{ok}` |
@@ -252,7 +321,7 @@ Response format: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 | `exec` | `program` | `{ok,stats}` |
 | `set_verifier` | `trusted_actors,receipt_prefix` | `{ok}` |
 | `clear_verifier` | — | `{ok}` |
-| `set_feedback_policy` | `success_increment,timeout_multiplier,…` | `{ok}` |
+| `set_plasticity_policy` | `success?,timeout?,transport?,tool_error?,…` (each with `state?`,`adjustment?`,`amount`) | `{ok}` |
 
 Enum values:
 

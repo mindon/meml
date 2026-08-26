@@ -151,7 +151,9 @@ fn recordInputFromJson(a: Allocator, o: ObjectMap) !meml.RecordInput {
         }
     }
     const structure: ?meml.Structure = if (fObject(o, "structure")) |value| .{ .kind = fStr(value, "kind") orelse return error.InvalidStructure, .fingerprint = fStr(value, "fingerprint") orelse return error.InvalidStructure } else null;
+    const kind = std.meta.stringToEnum(meml.Kind, fOptStr(o, "kind")) orelse if (fOptStr(o, "kind").len == 0) meml.Kind.experience else return error.InvalidKind;
     const input = meml.RecordInput{
+        .kind = kind,
         .subject = fOptStr(o, "subject"),
         .predicate = fOptStr(o, "predicate"),
         .object = fOptStr(o, "object"),
@@ -186,6 +188,18 @@ fn contextStructureFromJson(o: ObjectMap) !?meml.Structure {
     return .{ .kind = fStr(value, "kind") orelse return error.InvalidStructure, .fingerprint = fStr(value, "fingerprint") orelse return error.InvalidStructure };
 }
 
+fn propagationFromJson(o: ObjectMap) !meml.PropagationBudget {
+    const value = fObject(o, "propagation") orelse return .{};
+    const hops = fU64(value, "max_hops", 0);
+    if (hops > 8) return error.InvalidPropagationBudget;
+    return .{
+        .seed_limit = @intCast(fU64(value, "seed_limit", 64)),
+        .max_hops = @intCast(hops),
+        .edge_limit = @intCast(fU64(value, "edge_limit", 256)),
+        .candidate_limit = @intCast(fU64(value, "candidate_limit", 128)),
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Output helpers.
 // ---------------------------------------------------------------------------
@@ -214,18 +228,24 @@ fn okObject(a: Allocator) ObjectMap {
 // the configured prefix.
 // ---------------------------------------------------------------------------
 
-fn verifierVerify(ctx: *anyopaque, input: meml.FeedbackInput) anyerror!void {
-    const state: *State = @ptrCast(@alignCast(ctx));
-    var actor_ok = false;
+fn trustedReceipt(state: *const State, actor_name: []const u8, receipt: []const u8) !void {
     for (state.trusted_actors.items) |actor| {
-        if (std.mem.eql(u8, actor, input.actor)) {
-            actor_ok = true;
-            break;
+        if (std.mem.eql(u8, actor, actor_name)) {
+            if (state.receipt_prefix.len > 0 and !std.mem.startsWith(u8, receipt, state.receipt_prefix)) return error.UntrustedReceipt;
+            return;
         }
     }
-    if (!actor_ok) return error.UntrustedActor;
-    if (state.receipt_prefix.len > 0 and !std.mem.startsWith(u8, input.receipt, state.receipt_prefix))
-        return error.UntrustedReceipt;
+    return error.UntrustedActor;
+}
+
+fn verifierVerify(ctx: *anyopaque, input: meml.FeedbackInput) anyerror!void {
+    const state: *State = @ptrCast(@alignCast(ctx));
+    try trustedReceipt(state, input.actor, input.receipt);
+}
+
+fn transitionVerifierVerify(ctx: *anyopaque, input: meml.TransitionInput) anyerror!void {
+    const state: *State = @ptrCast(@alignCast(ctx));
+    try trustedReceipt(state, input.actor, input.receipt);
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +280,7 @@ fn encodeActivation(a: Allocator, runtime: *const meml.Runtime, act: meml.Activa
     try sig.put(a, "metric", .{ .float = act.signals.metric });
     try sig.put(a, "structure", .{ .float = act.signals.structure });
     try sig.put(a, "lineage", .{ .float = act.signals.lineage });
+    try sig.put(a, "stability", .{ .float = act.signals.stability });
     try sig.put(a, "contradiction", .{ .float = act.signals.contradiction });
     try sig.put(a, "external", .{ .float = act.signals.external });
     try map.put(a, "signals", .{ .object = sig });
@@ -339,10 +360,24 @@ fn cmdInfer(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !
     try writeValue(writer, .{ .object = resp });
 }
 
-fn cmdSetBeliefState(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
-    const s = std.meta.stringToEnum(meml.BeliefState, fOptStr(o, "state")) orelse return error.InvalidBeliefState;
-    try state.runtime.setBeliefState(fU64(o, "id", 0), s);
-    try writeValue(writer, .{ .object = okObject(a) });
+fn cmdTransition(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const kind = std.meta.stringToEnum(meml.TransitionKind, fOptStr(o, "kind")) orelse return error.InvalidTransitionKind;
+    const target_state: ?meml.CognitiveState = if (o.get("target_state") != null) std.meta.stringToEnum(meml.CognitiveState, fOptStr(o, "target_state")) orelse return error.InvalidCognitiveState else null;
+    const transition_id = try state.runtime.transition(.{
+        .target = fU64(o, "target", 0),
+        .kind = kind,
+        .target_state = target_state,
+        .amount = fF64(o, "amount", 0),
+        .cause = if (o.get("cause")) |_| fU64(o, "cause", 0) else null,
+        .reason = fOptStr(o, "reason"),
+        .actor = fOptStr(o, "actor"),
+        .receipt = fOptStr(o, "receipt"),
+        .timestamp = fInt(o, "timestamp", 0),
+    });
+    var resp = ObjectMap.empty;
+    try resp.put(a, "ok", .{ .bool = true });
+    try resp.put(a, "transition", .{ .integer = @intCast(transition_id) });
+    try writeValue(writer, .{ .object = resp });
 }
 
 fn cmdSupersede(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
@@ -368,6 +403,158 @@ fn cmdProcedure(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Write
     try writeValue(writer, .{ .object = resp });
 }
 
+fn cmdPredictProcedure(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const context = meml.Context{ .scopes = try contextScopesFromJson(a, o) };
+    const prediction = try state.runtime.predictProcedureAt(fU64(o, "procedure", 0), context, fInt(o, "cutoff", 0));
+    var resp = ObjectMap.empty;
+    try resp.put(a, "ok", .{ .bool = true });
+    try resp.put(a, "procedure", .{ .integer = @intCast(prediction.procedure) });
+    try resp.put(a, "compatible", .{ .bool = prediction.compatible });
+    try resp.put(a, "samples", .{ .integer = @intCast(prediction.samples) });
+    try resp.put(a, "successes", .{ .integer = @intCast(prediction.successes) });
+    try resp.put(a, "failures", .{ .integer = @intCast(prediction.failures) });
+    try resp.put(a, "success_probability", .{ .float = prediction.success_probability });
+    try resp.put(a, "evidence_coverage", .{ .float = prediction.evidence_coverage });
+    try writeValue(writer, .{ .object = resp });
+}
+
+fn selectionGateFrom(o: ObjectMap) meml.ProcedureSelectionQualityGate {
+    const value = fObject(o, "gate") orelse return .{};
+    return .{
+        .min_stability = fF64(value, "min_stability", 0.75),
+        .min_samples = @intCast(fU64(value, "min_samples", 3)),
+        .min_success_probability = fF64(value, "min_success_probability", 0.5),
+        .min_evidence_coverage = fF64(value, "min_evidence_coverage", 0.5),
+        .require_active = fBool(value, "require_active", true),
+        .require_scope_compatibility = fBool(value, "require_scope_compatibility", true),
+    };
+}
+
+fn encodeProcedureSelection(a: Allocator, selection: meml.ProcedureSelection) !Value {
+    var object = ObjectMap.empty;
+    try object.put(a, "procedure", .{ .integer = @intCast(selection.procedure) });
+    if (selection.counterfactual_score) |score| try object.put(a, "counterfactual_score", .{ .float = score });
+    if (selection.rank) |rank| try object.put(a, "rank", .{ .integer = @intCast(rank) });
+    var stability = ObjectMap.empty;
+    try stability.put(a, "state", .{ .string = @tagName(selection.stability.state) });
+    try stability.put(a, "score", .{ .float = selection.stability.score });
+    try stability.put(a, "support", .{ .integer = @intCast(selection.stability.support) });
+    try stability.put(a, "contradiction", .{ .integer = @intCast(selection.stability.contradiction) });
+    try object.put(a, "stability", .{ .object = stability });
+    var history = ObjectMap.empty;
+    try history.put(a, "samples", .{ .integer = @intCast(selection.history.samples) });
+    try history.put(a, "success_probability", .{ .float = selection.history.success_probability });
+    try history.put(a, "evidence_coverage", .{ .float = selection.history.evidence_coverage });
+    try object.put(a, "history", .{ .object = history });
+    var status = ObjectMap.empty;
+    try status.put(a, "active", .{ .bool = selection.status.active });
+    try status.put(a, "scope_compatible", .{ .bool = selection.status.scope_compatible });
+    try status.put(a, "stability_sufficient", .{ .bool = selection.status.stability_sufficient });
+    try status.put(a, "samples_sufficient", .{ .bool = selection.status.samples_sufficient });
+    try status.put(a, "success_probability_sufficient", .{ .bool = selection.status.success_probability_sufficient });
+    try status.put(a, "evidence_coverage_sufficient", .{ .bool = selection.status.evidence_coverage_sufficient });
+    try status.put(a, "eligible", .{ .bool = selection.status.eligible() });
+    try object.put(a, "status", .{ .object = status });
+    return .{ .object = object };
+}
+
+fn cmdSelectProcedures(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const candidates = try idList(a, o);
+    const context = meml.Context{ .scopes = try contextScopesFromJson(a, o) };
+    var selections = try state.runtime.selectProcedures(candidates, context, selectionGateFrom(o), a);
+    defer selections.deinit(a);
+    var response = ObjectMap.empty;
+    try response.put(a, "ok", .{ .bool = true });
+    var values = Array.init(a);
+    for (selections.items) |selection| try values.append(try encodeProcedureSelection(a, selection));
+    try response.put(a, "selections", .{ .array = values });
+    try writeValue(writer, .{ .object = response });
+}
+
+fn optionalF64(o: ObjectMap, key: []const u8) !?f64 {
+    const value = o.get(key) orelse return null;
+    return switch (value) {
+        .float => |number| number,
+        .integer => |number| @floatFromInt(number),
+        else => error.InvalidProcedureObjective,
+    };
+}
+
+fn comparisonObjectivesFrom(a: Allocator, o: ObjectMap) !std.ArrayList(meml.ProcedureObjective) {
+    const input = fArray(o, "objectives") orelse return error.InvalidProcedureObjectives;
+    if (input.items.len == 0 or input.items.len > 8) return error.InvalidProcedureObjectives;
+    var objectives = std.ArrayList(meml.ProcedureObjective).empty;
+    errdefer objectives.deinit(a);
+    for (input.items) |item| {
+        const value = switch (item) {
+            .object => |object| object,
+            else => return error.InvalidProcedureObjective,
+        };
+        const target_name = fStr(value, "target") orelse return error.InvalidProcedureObjective;
+        const target: meml.ProcedureObjectiveTarget = if (std.mem.eql(u8, target_name, "stability")) .stability else if (std.mem.eql(u8, target_name, "success_probability")) .success_probability else if (std.mem.eql(u8, target_name, "evidence_coverage")) .evidence_coverage else if (std.mem.eql(u8, target_name, "metric")) .{ .metric = .{ .name = fStr(value, "name") orelse return error.InvalidProcedureObjective, .unit = fStr(value, "unit") orelse return error.InvalidProcedureObjective } } else return error.InvalidProcedureObjective;
+        const direction = std.meta.stringToEnum(meml.MetricDirection, fOptStr(value, "direction")) orelse return error.InvalidProcedureObjective;
+        try objectives.append(a, .{ .target = target, .direction = direction, .weight = try requiredF64(value, "weight"), .hard_limit = try optionalF64(value, "hard_limit") });
+    }
+    return objectives;
+}
+
+fn encodeProcedureComparison(a: Allocator, comparison: meml.ProcedureComparison) !Value {
+    var object = ObjectMap.empty;
+    try object.put(a, "procedure", .{ .integer = @intCast(comparison.procedure) });
+    if (comparison.counterfactual_score) |score| try object.put(a, "counterfactual_score", .{ .float = score });
+    if (comparison.rank) |rank| try object.put(a, "rank", .{ .integer = @intCast(rank) });
+    var stability = ObjectMap.empty;
+    try stability.put(a, "state", .{ .string = @tagName(comparison.stability.state) });
+    try stability.put(a, "score", .{ .float = comparison.stability.score });
+    try object.put(a, "stability", .{ .object = stability });
+    var history = ObjectMap.empty;
+    try history.put(a, "samples", .{ .integer = @intCast(comparison.history.samples) });
+    try history.put(a, "success_probability", .{ .float = comparison.history.success_probability });
+    try history.put(a, "evidence_coverage", .{ .float = comparison.history.evidence_coverage });
+    try object.put(a, "history", .{ .object = history });
+    var status = ObjectMap.empty;
+    try status.put(a, "active", .{ .bool = comparison.status.active });
+    try status.put(a, "scope_compatible", .{ .bool = comparison.status.scope_compatible });
+    try status.put(a, "samples_sufficient", .{ .bool = comparison.status.samples_sufficient });
+    try status.put(a, "objectives_sufficient", .{ .bool = comparison.status.objectives_sufficient });
+    try status.put(a, "eligible", .{ .bool = comparison.status.eligible() });
+    try object.put(a, "status", .{ .object = status });
+    var assessments = Array.init(a);
+    for (comparison.assessments[0..comparison.assessment_count]) |assessment| {
+        var entry = ObjectMap.empty;
+        if (assessment.observed_value) |value| try entry.put(a, "observed_value", .{ .float = value });
+        if (assessment.uncertainty) |value| try entry.put(a, "uncertainty", .{ .float = value });
+        if (assessment.conservative_value) |value| try entry.put(a, "conservative_value", .{ .float = value });
+        if (assessment.normalized_value) |value| try entry.put(a, "normalized_value", .{ .float = value });
+        try entry.put(a, "hard_limit_satisfied", .{ .bool = assessment.hard_limit_satisfied });
+        try entry.put(a, "rejection", .{ .string = @tagName(assessment.rejection) });
+        try assessments.append(.{ .object = entry });
+    }
+    try object.put(a, "assessments", .{ .array = assessments });
+    return .{ .object = object };
+}
+
+fn cmdCompareProcedures(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const candidates = try idList(a, o);
+    var objectives = try comparisonObjectivesFrom(a, o);
+    defer objectives.deinit(a);
+    const policy = meml.ProcedureComparisonPolicy{
+        .require_active = fBool(o, "require_active", true),
+        .require_scope_compatibility = fBool(o, "require_scope_compatibility", true),
+        .min_samples = @intCast(fU64(o, "min_samples", 3)),
+        .objectives = objectives.items,
+    };
+    const context = meml.Context{ .scopes = try contextScopesFromJson(a, o) };
+    var comparisons = try state.runtime.compareProcedures(candidates, context, policy, a);
+    defer comparisons.deinit(a);
+    var response = ObjectMap.empty;
+    try response.put(a, "ok", .{ .bool = true });
+    var values = Array.init(a);
+    for (comparisons.items) |comparison| try values.append(try encodeProcedureComparison(a, comparison));
+    try response.put(a, "comparisons", .{ .array = values });
+    try writeValue(writer, .{ .object = response });
+}
+
 fn cmdActivate(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
     const ctx = meml.Context{
         .query = fOptStr(o, "query"),
@@ -378,6 +565,9 @@ fn cmdActivate(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer
         .preferred = fOptStr(o, "preferred"),
         .scopes = try contextScopesFromJson(a, o),
         .structure = try contextStructureFromJson(o),
+        .activation_policy = std.meta.stringToEnum(meml.ActivationPolicy, fOptStr(o, "activation_policy")) orelse if (fOptStr(o, "activation_policy").len == 0) .active_only else return error.InvalidActivationPolicy,
+        .minimum_stability = fF64(o, "minimum_stability", 0),
+        .propagation = try propagationFromJson(o),
         .resolve_conflicts = fBool(o, "resolve_conflicts", true),
     };
     const limit: usize = @intCast(fU64(o, "limit", 10));
@@ -389,6 +579,9 @@ fn cmdActivate(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer
     if (fBool(o, "stats", false)) {
         const result = try state.runtime.activateWithStats(ctx, limit, a);
         try resp.put(a, "candidates", .{ .integer = @intCast(result.stats.candidates) });
+        try resp.put(a, "seeds", .{ .integer = @intCast(result.stats.seeds) });
+        try resp.put(a, "propagated", .{ .integer = @intCast(result.stats.propagated) });
+        try resp.put(a, "edges_examined", .{ .integer = @intCast(result.stats.edges_examined) });
         try resp.put(a, "scored", .{ .integer = @intCast(result.stats.scored) });
         try resp.put(a, "returned", .{ .integer = @intCast(result.stats.returned) });
 
@@ -500,6 +693,7 @@ fn cmdExec(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !v
     try resp.put(a, "observed", .{ .integer = @intCast(report.observed) });
     try resp.put(a, "asserted", .{ .integer = @intCast(report.asserted) });
     try resp.put(a, "feedback", .{ .integer = @intCast(report.feedback) });
+    try resp.put(a, "transitions", .{ .integer = @intCast(report.transitions) });
     try resp.put(a, "consolidated", .{ .integer = @intCast(report.consolidated) });
     try resp.put(a, "neural_artifacts", .{ .integer = @intCast(report.neural_artifacts) });
     try resp.put(a, "activation_groups", .{ .integer = @intCast(report.activations.items.len) });
@@ -528,26 +722,38 @@ fn cmdSetVerifier(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Wri
     if (prefix.len > 0) state.receipt_prefix = try state.allocator.dupe(u8, prefix);
 
     state.runtime.setFeedbackVerifier(.{ .context = state, .verifyFn = verifierVerify });
+    state.runtime.setTransitionVerifier(.{ .context = state, .verifyFn = transitionVerifierVerify });
     try writeValue(writer, .{ .object = okObject(a) });
 }
 
 fn cmdClearVerifier(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
     _ = o;
     state.runtime.clearFeedbackVerifier();
+    state.runtime.clearTransitionVerifier();
     try writeValue(writer, .{ .object = okObject(a) });
 }
 
-fn cmdSetFeedbackPolicy(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
-    const policy = meml.FeedbackPolicy{
-        .success_increment = fF64(o, "success_increment", 0.1),
-        .timeout_multiplier = fF64(o, "timeout_multiplier", 0.95),
-        .transport_multiplier = fF64(o, "transport_multiplier", 0.9),
-        .tool_error_multiplier = fF64(o, "tool_error_multiplier", 0.8),
-        .invalid_result_multiplier = fF64(o, "invalid_result_multiplier", 0.7),
-        .unknown_multiplier = fF64(o, "unknown_multiplier", 0.85),
-        .neutral_multiplier = fF64(o, "neutral_multiplier", 1.0),
+fn plasticityRuleFrom(o: ObjectMap, key: []const u8, default_rule: meml.PlasticityRule) !meml.PlasticityRule {
+    const value = fObject(o, key) orelse return default_rule;
+    const state_value: ?meml.CognitiveState = if (value.get("state") != null) std.meta.stringToEnum(meml.CognitiveState, fOptStr(value, "state")) orelse return error.InvalidCognitiveState else null;
+    const adjustment: ?meml.TransitionKind = if (value.get("adjustment") != null) std.meta.stringToEnum(meml.TransitionKind, fOptStr(value, "adjustment")) orelse return error.InvalidTransitionKind else null;
+    return .{ .state = state_value, .adjustment = adjustment, .amount = fF64(value, "amount", 0) };
+}
+
+fn cmdSetPlasticityPolicy(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const defaults = meml.PlasticityPolicy{};
+    const policy = meml.PlasticityPolicy{
+        .success = try plasticityRuleFrom(o, "success", defaults.success),
+        .timeout = try plasticityRuleFrom(o, "timeout", defaults.timeout),
+        .transport = try plasticityRuleFrom(o, "transport", defaults.transport),
+        .tool_error = try plasticityRuleFrom(o, "tool_error", defaults.tool_error),
+        .invalid_result = try plasticityRuleFrom(o, "invalid_result", defaults.invalid_result),
+        .policy_denied = try plasticityRuleFrom(o, "policy_denied", defaults.policy_denied),
+        .unauthorized = try plasticityRuleFrom(o, "unauthorized", defaults.unauthorized),
+        .cancelled = try plasticityRuleFrom(o, "cancelled", defaults.cancelled),
+        .unknown = try plasticityRuleFrom(o, "unknown", defaults.unknown),
     };
-    try state.runtime.setFeedbackPolicy(policy);
+    try state.runtime.setPlasticityPolicy(policy);
     try writeValue(writer, .{ .object = okObject(a) });
 }
 
@@ -623,10 +829,13 @@ fn dispatch(state: *State, op: []const u8, o: ObjectMap, a: Allocator, writer: *
     if (std.mem.eql(u8, op, "unlink")) return cmdUnlink(state, o, a, writer);
     if (std.mem.eql(u8, op, "support")) return cmdSupport(state, o, a, writer);
     if (std.mem.eql(u8, op, "contradict")) return cmdContradict(state, o, a, writer);
-    if (std.mem.eql(u8, op, "set_belief_state")) return cmdSetBeliefState(state, o, a, writer);
+    if (std.mem.eql(u8, op, "transition")) return cmdTransition(state, o, a, writer);
     if (std.mem.eql(u8, op, "supersede")) return cmdSupersede(state, o, a, writer);
     if (std.mem.eql(u8, op, "generalize")) return cmdGeneralize(state, o, a, writer);
     if (std.mem.eql(u8, op, "procedure")) return cmdProcedure(state, o, a, writer);
+    if (std.mem.eql(u8, op, "predict_procedure")) return cmdPredictProcedure(state, o, a, writer);
+    if (std.mem.eql(u8, op, "select_procedures")) return cmdSelectProcedures(state, o, a, writer);
+    if (std.mem.eql(u8, op, "compare_procedures")) return cmdCompareProcedures(state, o, a, writer);
     if (std.mem.eql(u8, op, "activate")) return cmdActivate(state, o, a, writer);
     if (std.mem.eql(u8, op, "feedback")) return cmdFeedback(state, o, a, writer);
     if (std.mem.eql(u8, op, "consolidate")) return cmdConsolidate(state, o, a, writer);
@@ -638,7 +847,7 @@ fn dispatch(state: *State, op: []const u8, o: ObjectMap, a: Allocator, writer: *
     if (std.mem.eql(u8, op, "exec")) return cmdExec(state, o, a, writer);
     if (std.mem.eql(u8, op, "set_verifier")) return cmdSetVerifier(state, o, a, writer);
     if (std.mem.eql(u8, op, "clear_verifier")) return cmdClearVerifier(state, o, a, writer);
-    if (std.mem.eql(u8, op, "set_feedback_policy")) return cmdSetFeedbackPolicy(state, o, a, writer);
+    if (std.mem.eql(u8, op, "set_plasticity_policy")) return cmdSetPlasticityPolicy(state, o, a, writer);
     return error.UnknownOp;
 }
 
@@ -716,9 +925,9 @@ const help_text =
     \\line: {"ok":true,...} or {"ok":false,"error":"..."}.
     \\
     \\Ops: ping observe assert remember infer link unlink support contradict
-    \\     set_belief_state supersede generalize procedure activate feedback
+    \\     transition supersede generalize procedure predict_procedure select_procedures compare_procedures activate feedback
     \\     consolidate auto_consolidate signals backend persist recover exec
-    \\     set_verifier clear_verifier set_feedback_policy
+    \\     set_verifier clear_verifier set_plasticity_policy
     \\
 ;
 

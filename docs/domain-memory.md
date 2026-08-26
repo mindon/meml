@@ -69,6 +69,6 @@ zig build cli -- --file examples/science-workflow.jsonl
 
 ## 持久化与安全
 
-状态格式为唯一支持的 `MEML13`。旧格式一律返回 `UnsupportedVersion`，没有迁移、双写或兼容读取路径。结构化记录与语义图一起持久化，派生索引仍在恢复后重建。
+状态格式为唯一支持的 `MEML14`。旧格式一律返回 `UnsupportedVersion`，没有迁移、双写或兼容读取路径。结构化记录与语义图一起持久化，派生索引仍在恢复后重建。
 
 外部硬件、实验系统、文件存储和模型服务由宿主负责认证、授权、端点控制与内容完整性。反馈仍必须通过 `FeedbackVerifier` 的 actor、receipt、目标、结果与时效校验；未经验证的外部结果不改变状态。

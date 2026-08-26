@@ -6,6 +6,7 @@ const persistence = @import("persistence.zig");
 const index_journal = @import("index_journal.zig");
 const storage_mod = @import("storage.zig");
 const retrieval = @import("retrieval.zig");
+const ranking = @import("ranking.zig");
 const signals_mod = @import("signals.zig");
 const neural_mod = @import("neural.zig");
 
@@ -13,6 +14,7 @@ pub const Runtime = struct {
     allocator: std.mem.Allocator,
     store: store_mod.Store,
     next_id: u64 = 1,
+    next_transition_id: u64 = 1,
     clock: i64 = 0,
     revision: u64 = 0,
     index_checkpoint_revision: u64 = 0,
@@ -27,7 +29,8 @@ pub const Runtime = struct {
     auto_consolidation_enabled: bool = false,
     auto_consolidation_policy: ConsolidationPolicy = .{},
     feedback_verifier: ?model.FeedbackVerifier = null,
-    feedback_policy: model.FeedbackPolicy = .{},
+    transition_verifier: ?model.TransitionVerifier = null,
+    plasticity_policy: model.PlasticityPolicy = .{},
 
     pub const ConsolidationReport = struct {
         scanned_experiences: usize = 0,
@@ -62,6 +65,7 @@ pub const Runtime = struct {
         runtime: *Runtime,
         store: store_mod.Store,
         next_id: u64,
+        next_transition_id: u64,
         clock: i64,
         revision: u64,
         index_checkpoint_revision: u64,
@@ -74,7 +78,8 @@ pub const Runtime = struct {
         auto_consolidation_enabled: bool,
         auto_consolidation_policy: ConsolidationPolicy,
         feedback_verifier: ?model.FeedbackVerifier,
-        feedback_policy: model.FeedbackPolicy,
+        transition_verifier: ?model.TransitionVerifier,
+        plasticity_policy: model.PlasticityPolicy,
         committed: bool = false,
 
         pub fn commit(self: *Transaction) void {
@@ -88,6 +93,7 @@ pub const Runtime = struct {
             runtime.store = self.store;
             self.store = store_mod.Store.init(runtime.allocator);
             runtime.next_id = self.next_id;
+            runtime.next_transition_id = self.next_transition_id;
             runtime.clock = self.clock;
             runtime.revision = self.revision;
             runtime.index_checkpoint_revision = self.index_checkpoint_revision;
@@ -104,6 +110,8 @@ pub const Runtime = struct {
             runtime.auto_consolidation_enabled = self.auto_consolidation_enabled;
             runtime.auto_consolidation_policy = self.auto_consolidation_policy;
             runtime.feedback_verifier = self.feedback_verifier;
+            runtime.transition_verifier = self.transition_verifier;
+            runtime.plasticity_policy = self.plasticity_policy;
             try runtime.backend.reset(&runtime.store);
         }
 
@@ -134,6 +142,7 @@ pub const Runtime = struct {
             .runtime = self,
             .store = try self.store.clone(self.allocator),
             .next_id = self.next_id,
+            .next_transition_id = self.next_transition_id,
             .clock = self.clock,
             .revision = self.revision,
             .index_checkpoint_revision = self.index_checkpoint_revision,
@@ -146,7 +155,8 @@ pub const Runtime = struct {
             .auto_consolidation_enabled = self.auto_consolidation_enabled,
             .auto_consolidation_policy = self.auto_consolidation_policy,
             .feedback_verifier = self.feedback_verifier,
-            .feedback_policy = self.feedback_policy,
+            .transition_verifier = self.transition_verifier,
+            .plasticity_policy = self.plasticity_policy,
         };
     }
 
@@ -262,7 +272,6 @@ pub const Runtime = struct {
         if (self.store.node(to)) |node| if (node.kind == .belief) {
             node.support_count += 1;
             node.last_confirmed_at = self.clock;
-            if (node.belief_state == .contested and node.support_count > node.contradiction_count) node.belief_state = .active;
         };
     }
     pub fn contradict(self: *Runtime, from: u64, to: u64) !void {
@@ -270,7 +279,6 @@ pub const Runtime = struct {
         if (self.store.node(to)) |node| if (node.kind == .belief) {
             node.contradiction_count += 1;
             node.last_contradicted_at = self.clock;
-            node.belief_state = .contested;
         };
     }
 
@@ -284,22 +292,138 @@ pub const Runtime = struct {
         self.feedback_verifier = null;
     }
 
-    pub fn setFeedbackPolicy(self: *Runtime, policy: model.FeedbackPolicy) !void {
-        const values = [_]f64{ policy.success_increment, policy.timeout_multiplier, policy.transport_multiplier, policy.tool_error_multiplier, policy.invalid_result_multiplier, policy.unknown_multiplier, policy.neutral_multiplier };
-        for (values) |value| if (!std.math.isFinite(value) or value < 0 or value > 1) return error.InvalidFeedbackPolicy;
-        self.feedback_policy = policy;
+    /// Installs the host-owned verifier required for externally requested
+    /// cognitive transitions. This boundary intentionally does not execute
+    /// actions; it only authorizes durable memory-state changes.
+    pub fn setTransitionVerifier(self: *Runtime, verifier: model.TransitionVerifier) void {
+        self.transition_verifier = verifier;
     }
 
-    fn feedbackPenalty(self: *const Runtime, class: model.FailureClass) f64 {
-        return switch (class) {
-            .timeout => self.feedback_policy.timeout_multiplier,
-            .transport => self.feedback_policy.transport_multiplier,
-            .tool_error => self.feedback_policy.tool_error_multiplier,
-            .invalid_result => self.feedback_policy.invalid_result_multiplier,
-            .policy_denied, .unauthorized, .cancelled => self.feedback_policy.neutral_multiplier,
-            .unknown => self.feedback_policy.unknown_multiplier,
-            .none => self.feedback_policy.neutral_multiplier,
+    pub fn clearTransitionVerifier(self: *Runtime) void {
+        self.transition_verifier = null;
+    }
+
+    fn validateTransitionInput(self: *const Runtime, input: model.TransitionInput) !void {
+        const target = self.store.constNode(input.target) orelse return error.UnknownNode;
+        _ = target;
+        if (input.cause) |cause| if (self.store.constNode(cause) == null) return error.UnknownCause;
+        if (input.reason.len == 0 or input.reason.len > 512 or input.actor.len == 0 or input.actor.len > 128 or input.receipt.len == 0 or input.receipt.len > 512) return error.InvalidTransition;
+        if (!std.math.isFinite(input.amount) or input.amount < 0 or input.amount > 1) return error.InvalidTransition;
+        switch (input.kind) {
+            .set_state => if (input.target_state == null or input.amount != 0) return error.InvalidTransition,
+            .reinforce, .penalize, .stabilize, .decay => if (input.target_state != null or input.amount == 0) return error.InvalidTransition,
+        }
+    }
+
+    fn applyTransition(self: *Runtime, input: model.TransitionInput) !u64 {
+        const target = self.store.node(input.target) orelse return error.UnknownNode;
+        const prior_state = target.cognitive_state;
+        const prior_confidence = target.confidence;
+        const prior_strength = target.strength;
+        switch (input.kind) {
+            .set_state => target.cognitive_state = input.target_state.?,
+            .reinforce => {
+                target.confidence = @min(1, target.confidence + input.amount);
+                target.strength = @min(1, target.strength + input.amount);
+            },
+            .penalize, .decay => {
+                target.confidence *= 1 - input.amount;
+                target.strength *= 1 - input.amount;
+            },
+            .stabilize => {
+                target.cognitive_state = .active;
+                target.strength = @min(1, target.strength + input.amount);
+            },
+        }
+        self.clock = @max(self.clock, input.timestamp);
+        const id = self.next_transition_id;
+        self.next_transition_id += 1;
+        try self.store.recordTransition(.{
+            .id = id,
+            .target = input.target,
+            .cause = input.cause,
+            .kind = input.kind,
+            .prior_state = prior_state,
+            .next_state = target.cognitive_state,
+            .prior_confidence = prior_confidence,
+            .next_confidence = target.confidence,
+            .prior_strength = prior_strength,
+            .next_strength = target.strength,
+            .timestamp = input.timestamp,
+            .reason = input.reason,
+            .actor = input.actor,
+            .receipt = input.receipt,
+        });
+        return id;
+    }
+
+    /// Commits one bounded, verified state change. The receipt and actor are
+    /// verified before the transaction begins; allocation failures restore the
+    /// node, clock, ID, and audit log together.
+    pub fn transition(self: *Runtime, input: model.TransitionInput) !u64 {
+        try self.validateTransitionInput(input);
+        const verifier = self.transition_verifier orelse return error.TransitionVerifierRequired;
+        try verifier.verify(input);
+        var transaction = try self.beginTransaction();
+        defer transaction.deinit();
+        const id = self.applyTransition(input) catch |err| {
+            transaction.rollback() catch |rollback_err| return rollback_err;
+            return err;
         };
+        transaction.commit();
+        return id;
+    }
+
+    /// Replays the immutable transition audit without trusting caller state.
+    /// It verifies per-target continuity and that each node ends at its last
+    /// recorded state; this is the deterministic audit hook for host ledgers.
+    pub fn verifyTransitionHistory(self: *const Runtime) !void {
+        var last = std.AutoHashMap(u64, model.TransitionRecord).init(self.allocator);
+        defer last.deinit();
+        for (self.store.transition_records.items) |transition_record| {
+            if (last.get(transition_record.target)) |previous| {
+                if (previous.next_state != transition_record.prior_state or previous.next_confidence != transition_record.prior_confidence or previous.next_strength != transition_record.prior_strength) return error.InvalidTransitionHistory;
+            }
+            try last.put(transition_record.target, transition_record);
+        }
+        var iterator = last.iterator();
+        while (iterator.next()) |entry| {
+            const node = self.store.constNode(entry.key_ptr.*) orelse return error.InvalidTransitionHistory;
+            const transition_record = entry.value_ptr.*;
+            if (node.cognitive_state != transition_record.next_state or node.confidence != transition_record.next_confidence or node.strength != transition_record.next_strength) return error.InvalidTransitionHistory;
+        }
+    }
+
+    pub fn setPlasticityPolicy(self: *Runtime, policy: model.PlasticityPolicy) !void {
+        const rules = [_]model.PlasticityRule{ policy.success, policy.timeout, policy.transport, policy.tool_error, policy.invalid_result, policy.policy_denied, policy.unauthorized, policy.cancelled, policy.unknown };
+        for (rules) |rule| {
+            if (!std.math.isFinite(rule.amount) or rule.amount < 0 or rule.amount > 1) return error.InvalidPlasticityPolicy;
+            if (rule.adjustment) |adjustment| switch (adjustment) {
+                .reinforce, .penalize, .stabilize, .decay => if (rule.amount == 0) return error.InvalidPlasticityPolicy,
+                .set_state => return error.InvalidPlasticityPolicy,
+            } else if (rule.amount != 0) return error.InvalidPlasticityPolicy;
+        }
+        self.plasticity_policy = policy;
+    }
+
+    fn plasticityRule(self: *const Runtime, input: model.FeedbackInput) model.PlasticityRule {
+        if (input.outcome == .success) return self.plasticity_policy.success;
+        return switch (input.failure_class) {
+            .timeout => self.plasticity_policy.timeout,
+            .transport => self.plasticity_policy.transport,
+            .tool_error => self.plasticity_policy.tool_error,
+            .invalid_result => self.plasticity_policy.invalid_result,
+            .policy_denied => self.plasticity_policy.policy_denied,
+            .unauthorized => self.plasticity_policy.unauthorized,
+            .cancelled => self.plasticity_policy.cancelled,
+            .unknown => self.plasticity_policy.unknown,
+            .none => unreachable,
+        };
+    }
+
+    fn applyPlasticity(self: *Runtime, target: u64, cause: u64, input: model.FeedbackInput, rule: model.PlasticityRule) !void {
+        if (rule.state) |state| _ = try self.applyTransition(.{ .target = target, .kind = .set_state, .target_state = state, .cause = cause, .reason = "verified feedback plasticity", .actor = input.actor, .receipt = input.receipt, .timestamp = input.timestamp });
+        if (rule.adjustment) |adjustment| _ = try self.applyTransition(.{ .target = target, .kind = adjustment, .amount = rule.amount, .cause = cause, .reason = "verified feedback plasticity", .actor = input.actor, .receipt = input.receipt, .timestamp = input.timestamp });
     }
 
     /// Applies a verified external result. Verification happens before any
@@ -327,20 +451,8 @@ pub const Runtime = struct {
         const result = if (input.outcome == .success) "success" else @tagName(input.failure_class);
         const evidence = try self.make(.evidence, target.subject, target.predicate, target.object, target.context, result, 0.5, input.timestamp);
         try self.store.recordFeedback(.{ .evidence = evidence, .target = input.target, .outcome = input.outcome, .failure_class = input.failure_class, .actor = input.actor, .receipt = input.receipt });
-        if (input.outcome == .success) {
-            try self.support(evidence, input.target, 1);
-            if (self.store.node(input.target)) |node| {
-                node.confidence = @min(1, node.confidence + self.feedback_policy.success_increment);
-                node.strength = @min(1, node.strength + self.feedback_policy.success_increment);
-            }
-        } else {
-            try self.contradict(evidence, input.target);
-            const penalty = self.feedbackPenalty(input.failure_class);
-            if (self.store.node(input.target)) |node| {
-                node.confidence *= penalty;
-                node.strength *= penalty;
-            }
-        }
+        if (input.outcome == .success) try self.support(evidence, input.target, 1) else try self.contradict(evidence, input.target);
+        try self.applyPlasticity(input.target, evidence, input, self.plasticityRule(input));
         return evidence;
     }
 
@@ -349,18 +461,14 @@ pub const Runtime = struct {
         return self.make(.belief, node.subject, node.predicate, node.object, node.context, "inferred", node.confidence, self.clock);
     }
 
-    pub fn setBeliefState(self: *Runtime, id: u64, state: model.BeliefState) !void {
-        const node = self.store.node(id) orelse return error.UnknownNode;
-        if (node.kind != .belief) return error.NotBelief;
-        node.belief_state = state;
-    }
-
+    /// Kernel-owned consolidation operation: a replacement belief supersedes an
+    /// older belief and records the lifecycle change in the same audit stream.
     pub fn supersedeBelief(self: *Runtime, old_id: u64, replacement_id: u64) !void {
         const old = self.store.node(old_id) orelse return error.UnknownNode;
         const replacement = self.store.node(replacement_id) orelse return error.UnknownNode;
         if (old.kind != .belief or replacement.kind != .belief) return error.NotBelief;
-        old.belief_state = .superseded;
         try self.store.link(.{ .from = replacement_id, .to = old_id, .kind = .derived_from, .weight = 1 });
+        _ = try self.applyTransition(.{ .target = old_id, .kind = .set_state, .target_state = .superseded, .cause = replacement_id, .reason = "kernel belief replacement", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
     }
     pub fn generalize(self: *Runtime, ids: []const u64, concept: []const u8) !u64 {
         if (ids.len == 0) return error.EmptyEvidence;
@@ -389,6 +497,282 @@ pub const Runtime = struct {
     pub fn activateWithStats(self: *Runtime, context: model.Context, limit: usize, allocator: std.mem.Allocator) !retrieval.Result {
         return retrieval.runWithPipeline(&self.store, self.backend, context, limit, allocator, &self.signal_pipeline);
     }
+
+    pub fn stability(self: *const Runtime, id: u64) !model.Stability {
+        const node = self.store.constNode(id) orelse return error.UnknownNode;
+        return ranking.stability(&self.store, node.*);
+    }
+
+    fn scopesCompatible(self: *const Runtime, id: u64, requested: []const model.Scope) bool {
+        for (requested) |scope| {
+            var found = false;
+            for (self.store.scoped_records.items) |scope_record| {
+                if (scope_record.node != id or !std.mem.eql(u8, scope_record.scope.key, scope.key)) continue;
+                if (!std.mem.eql(u8, scope_record.scope.value, scope.value)) return false;
+                found = true;
+                break;
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    /// Selection uses exact scope equality rather than prediction's directional
+    /// compatibility: an unscoped request cannot silently select a procedure
+    /// trained only for a hidden environment.
+    fn selectionScopesCompatible(self: *const Runtime, id: u64, requested: []const model.Scope) bool {
+        var procedure_scopes: usize = 0;
+        for (self.store.scoped_records.items) |scope_record| {
+            if (scope_record.node != id) continue;
+            procedure_scopes += 1;
+            var found = false;
+            for (requested) |scope| {
+                if (std.mem.eql(u8, scope_record.scope.key, scope.key) and std.mem.eql(u8, scope_record.scope.value, scope.value)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return procedure_scopes == requested.len;
+    }
+
+    fn validateSelectionGate(gate: model.ProcedureSelectionQualityGate) !void {
+        const values = [_]f64{ gate.min_stability, gate.min_success_probability, gate.min_evidence_coverage };
+        for (values) |value| if (!std.math.isFinite(value) or value < 0 or value > 1) return error.InvalidProcedureSelectionGate;
+    }
+
+    fn sortProcedureSelections(_: void, left: model.ProcedureSelection, right: model.ProcedureSelection) bool {
+        const left_score = left.counterfactual_score orelse -1;
+        const right_score = right.counterfactual_score orelse -1;
+        if (left_score == right_score) return left.procedure < right.procedure;
+        return left_score > right_score;
+    }
+
+    /// Performs a read-only, restricted comparison over exactly the procedure
+    /// IDs supplied by the caller. No backend retrieval, graph expansion, or
+    /// host action happens here; rejected items receive no score or rank.
+    pub fn selectProcedures(self: *const Runtime, candidates: []const u64, context: model.Context, gate: model.ProcedureSelectionQualityGate, allocator: std.mem.Allocator) !std.ArrayList(model.ProcedureSelection) {
+        try validateSelectionGate(gate);
+        if (candidates.len == 0 or candidates.len > 64) return error.InvalidProcedureCandidates;
+        var output = std.ArrayList(model.ProcedureSelection).empty;
+        errdefer output.deinit(allocator);
+        var seen = std.AutoHashMap(u64, void).init(allocator);
+        defer seen.deinit();
+        for (candidates) |procedure| {
+            if ((try seen.getOrPut(procedure)).found_existing) return error.DuplicateProcedureCandidate;
+            const node = self.store.constNode(procedure) orelse return error.UnknownNode;
+            if (node.kind != .procedure) return error.NotProcedure;
+            const stability_value = try self.stability(procedure);
+            const history = try self.predictProcedureAt(procedure, context, 0);
+            const active = !gate.require_active or node.cognitive_state == .active;
+            const scope_compatible = !gate.require_scope_compatibility or self.selectionScopesCompatible(procedure, context.scopes);
+            const status: model.ProcedureSelectionStatus = .{
+                .active = active,
+                .scope_compatible = scope_compatible,
+                .stability_sufficient = stability_value.score >= gate.min_stability,
+                .samples_sufficient = history.samples >= gate.min_samples,
+                .success_probability_sufficient = history.success_probability >= gate.min_success_probability,
+                .evidence_coverage_sufficient = history.evidence_coverage >= gate.min_evidence_coverage,
+            };
+            const score: ?f64 = if (status.eligible()) stability_value.score * 0.4 + history.success_probability * 0.4 + history.evidence_coverage * 0.2 else null;
+            try output.append(allocator, .{ .procedure = procedure, .stability = stability_value, .history = history, .status = status, .counterfactual_score = score });
+        }
+        std.sort.heap(model.ProcedureSelection, output.items, {}, sortProcedureSelections);
+        var rank: usize = 1;
+        for (output.items) |*selection| {
+            if (selection.counterfactual_score != null) {
+                selection.rank = rank;
+                rank += 1;
+            }
+        }
+        return output;
+    }
+
+    fn objectivesDuplicate(left: model.ProcedureObjectiveTarget, right: model.ProcedureObjectiveTarget) bool {
+        return switch (left) {
+            .stability => switch (right) {
+                .stability => true,
+                else => false,
+            },
+            .success_probability => switch (right) {
+                .success_probability => true,
+                else => false,
+            },
+            .evidence_coverage => switch (right) {
+                .evidence_coverage => true,
+                else => false,
+            },
+            .metric => |left_metric| switch (right) {
+                .metric => |right_metric| std.mem.eql(u8, left_metric.name, right_metric.name) and std.mem.eql(u8, left_metric.unit, right_metric.unit),
+                else => false,
+            },
+        };
+    }
+
+    fn validateComparisonPolicy(policy: model.ProcedureComparisonPolicy) !void {
+        if (policy.objectives.len == 0 or policy.objectives.len > model.max_procedure_objectives) return error.InvalidProcedureObjectives;
+        var total_weight: f64 = 0;
+        for (policy.objectives, 0..) |objective, index| {
+            if (objective.direction == .neutral or !std.math.isFinite(objective.weight) or objective.weight < 0) return error.InvalidProcedureObjective;
+            if (objective.hard_limit) |limit| if (!std.math.isFinite(limit)) return error.InvalidProcedureObjective;
+            switch (objective.target) {
+                .stability, .success_probability, .evidence_coverage => if (objective.direction != .maximize) return error.InvalidProcedureObjective,
+                .metric => |metric| if (metric.name.len == 0 or metric.name.len > 96 or metric.unit.len == 0 or metric.unit.len > 64) return error.InvalidProcedureObjective,
+            }
+            for (policy.objectives[0..index]) |previous| if (objectivesDuplicate(objective.target, previous.target)) return error.DuplicateProcedureObjective;
+            total_weight += objective.weight;
+        }
+        if (total_weight <= 0) return error.InvalidProcedureObjective;
+    }
+
+    fn procedureMetric(self: *const Runtime, procedure: u64, target: model.ProcedureMetricTarget) ?model.Metric {
+        for (self.store.metric_records.items) |metric_record| {
+            if (metric_record.node == procedure and std.mem.eql(u8, metric_record.metric.name, target.name) and std.mem.eql(u8, metric_record.metric.unit, target.unit)) return metric_record.metric;
+        }
+        return null;
+    }
+
+    fn objectiveAssessment(self: *const Runtime, procedure: u64, objective: model.ProcedureObjective, stability_value: model.Stability, history: model.ProcedurePrediction) model.ProcedureObjectiveAssessment {
+        var assessment: model.ProcedureObjectiveAssessment = .{};
+        switch (objective.target) {
+            .stability => assessment.observed_value = stability_value.score,
+            .success_probability => assessment.observed_value = history.success_probability,
+            .evidence_coverage => assessment.observed_value = history.evidence_coverage,
+            .metric => |target| {
+                const metric = self.procedureMetric(procedure, target) orelse {
+                    assessment.rejection = .missing_metric;
+                    return assessment;
+                };
+                if (metric.direction != objective.direction) {
+                    assessment.rejection = .metric_direction_mismatch;
+                    return assessment;
+                }
+                assessment.observed_value = metric.value;
+                assessment.uncertainty = metric.uncertainty;
+            },
+        }
+        const value = assessment.observed_value.?;
+        assessment.conservative_value = if (assessment.uncertainty) |uncertainty| switch (objective.direction) {
+            .maximize => value - uncertainty,
+            .minimize => value + uncertainty,
+            .neutral => unreachable,
+        } else value;
+        assessment.hard_limit_satisfied = if (objective.hard_limit) |limit| switch (objective.direction) {
+            .maximize => assessment.conservative_value.? >= limit,
+            .minimize => assessment.conservative_value.? <= limit,
+            .neutral => unreachable,
+        } else true;
+        if (!assessment.hard_limit_satisfied) assessment.rejection = .hard_limit_failed;
+        return assessment;
+    }
+
+    fn sortProcedureComparisons(_: void, left: model.ProcedureComparison, right: model.ProcedureComparison) bool {
+        const left_score = left.counterfactual_score orelse -1;
+        const right_score = right.counterfactual_score orelse -1;
+        if (left_score == right_score) return left.procedure < right.procedure;
+        return left_score > right_score;
+    }
+
+    /// Runs an explicitly bounded, read-only counterfactual comparison. The
+    /// caller supplies both candidates and objectives; the kernel only measures
+    /// durable evidence and never discovers alternatives or invokes actions.
+    pub fn compareProcedures(self: *const Runtime, candidates: []const u64, context: model.Context, policy: model.ProcedureComparisonPolicy, allocator: std.mem.Allocator) !std.ArrayList(model.ProcedureComparison) {
+        try validateComparisonPolicy(policy);
+        if (candidates.len == 0 or candidates.len > 64) return error.InvalidProcedureCandidates;
+        var output = std.ArrayList(model.ProcedureComparison).empty;
+        errdefer output.deinit(allocator);
+        var seen = std.AutoHashMap(u64, void).init(allocator);
+        defer seen.deinit();
+        for (candidates) |procedure| {
+            if ((try seen.getOrPut(procedure)).found_existing) return error.DuplicateProcedureCandidate;
+            const node = self.store.constNode(procedure) orelse return error.UnknownNode;
+            if (node.kind != .procedure) return error.NotProcedure;
+            const stability_value = try self.stability(procedure);
+            const history = try self.predictProcedureAt(procedure, context, 0);
+            var comparison = model.ProcedureComparison{
+                .procedure = procedure,
+                .stability = stability_value,
+                .history = history,
+                .status = .{
+                    .active = !policy.require_active or node.cognitive_state == .active,
+                    .scope_compatible = !policy.require_scope_compatibility or self.selectionScopesCompatible(procedure, context.scopes),
+                    .samples_sufficient = history.samples >= policy.min_samples,
+                    .objectives_sufficient = true,
+                },
+                .assessment_count = policy.objectives.len,
+            };
+            for (policy.objectives, 0..) |objective, index| {
+                comparison.assessments[index] = self.objectiveAssessment(procedure, objective, stability_value, history);
+                if (comparison.assessments[index].rejection != .none) comparison.status.objectives_sufficient = false;
+            }
+            try output.append(allocator, comparison);
+        }
+        for (policy.objectives, 0..) |objective, index| {
+            var minimum: ?f64 = null;
+            var maximum: ?f64 = null;
+            for (output.items) |comparison| {
+                if (!comparison.status.eligible()) continue;
+                const value = comparison.assessments[index].conservative_value orelse continue;
+                minimum = if (minimum) |current| @min(current, value) else value;
+                maximum = if (maximum) |current| @max(current, value) else value;
+            }
+            for (output.items) |*comparison| {
+                if (!comparison.status.eligible()) continue;
+                const value = comparison.assessments[index].conservative_value orelse continue;
+                const low = minimum orelse continue;
+                const high = maximum orelse continue;
+                comparison.assessments[index].normalized_value = if (low == high) 1 else switch (objective.direction) {
+                    .maximize => (value - low) / (high - low),
+                    .minimize => (high - value) / (high - low),
+                    .neutral => unreachable,
+                };
+            }
+        }
+        var total_weight: f64 = 0;
+        for (policy.objectives) |objective| total_weight += objective.weight;
+        for (output.items) |*comparison| {
+            if (!comparison.status.eligible()) continue;
+            var score: f64 = 0;
+            for (policy.objectives, 0..) |objective, index| score += objective.weight * comparison.assessments[index].normalized_value.?;
+            comparison.counterfactual_score = score / total_weight;
+        }
+        std.sort.heap(model.ProcedureComparison, output.items, {}, sortProcedureComparisons);
+        var rank: usize = 1;
+        for (output.items) |*comparison| if (comparison.counterfactual_score != null) {
+            comparison.rank = rank;
+            rank += 1;
+        };
+        return output;
+    }
+
+    /// Estimates a procedure's observed success rate from feedback recorded no
+    /// later than `cutoff`. Laplace smoothing keeps zero-sample estimates
+    /// explicitly uncertain rather than presenting them as certainty.
+    pub fn predictProcedureAt(self: *const Runtime, procedure: u64, context: model.Context, cutoff: i64) !model.ProcedurePrediction {
+        const node = self.store.constNode(procedure) orelse return error.UnknownNode;
+        if (node.kind != .procedure) return error.NotProcedure;
+        const compatible = self.scopesCompatible(procedure, context.scopes);
+        var successes: usize = 0;
+        var failures: usize = 0;
+        for (self.store.feedback_records.items) |feedback| {
+            if (feedback.target != procedure) continue;
+            const evidence = self.store.constNode(feedback.evidence) orelse return error.InvalidFeedbackHistory;
+            if (cutoff != 0 and evidence.timestamp > cutoff) continue;
+            if (feedback.outcome == .success) successes += 1 else failures += 1;
+        }
+        const samples = successes + failures;
+        return .{
+            .procedure = procedure,
+            .compatible = compatible,
+            .samples = samples,
+            .successes = successes,
+            .failures = failures,
+            .success_probability = @as(f64, @floatFromInt(successes + 1)) / @as(f64, @floatFromInt(samples + 2)),
+            .evidence_coverage = @as(f64, @floatFromInt(samples)) / @as(f64, @floatFromInt(samples + 3)),
+        };
+    }
+
     pub fn addSignalProvider(self: *Runtime, provider: signals_mod.Provider) !void {
         try self.signal_pipeline.append(provider);
     }
@@ -600,12 +984,10 @@ pub const Runtime = struct {
                 try self.recordRule(belief_id.?, "repeated-experience-to-belief", experiences.items[i], experiences.items[i + repetitions - 1]);
                 report.beliefs_created += 1;
             } else if (self.store.node(belief_id.?)) |belief| {
-                const updated = @min(1, belief.confidence + 0.05 * @as(f64, @floatFromInt(repetitions)));
-                belief.confidence = updated;
-                belief.strength = @min(1, belief.strength + 0.05);
                 belief.support_count += @intCast(repetitions);
                 belief.last_confirmed_at = self.clock;
-                if (belief.belief_state == .contested and belief.support_count > belief.contradiction_count) belief.belief_state = .active;
+                _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .reinforce, .amount = @min(0.25, 0.05 * @as(f64, @floatFromInt(repetitions))), .reason = "kernel repeated experience", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
+                if (belief.cognitive_state == .contested and belief.support_count > belief.contradiction_count) _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .stabilize, .amount = 0.01, .reason = "kernel support majority", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
             }
             for (self.store.nodes.items) |node| if (node.kind == .memory and sameSemantic(node, left.*) and !self.hasRelation(belief_id.?, node.id, .derived_from)) {
                 try self.store.link(.{ .from = belief_id.?, .to = node.id, .kind = .derived_from, .weight = 1 });
@@ -628,17 +1010,17 @@ pub const Runtime = struct {
                         try self.store.link(.{ .from = left.id, .to = right.id, .kind = .contradicts, .weight = 1 });
                         if (same_context) {
                             if (self.store.node(left.id)) |node| {
-                                node.confidence *= 0.8;
                                 node.contradiction_count += 1;
                                 node.last_contradicted_at = self.clock;
-                                node.belief_state = .contested;
                             }
+                            _ = try self.applyTransition(.{ .target = left.id, .kind = .set_state, .target_state = .contested, .cause = right.id, .reason = "kernel contextual contradiction", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
+                            _ = try self.applyTransition(.{ .target = left.id, .kind = .penalize, .amount = 0.2, .cause = right.id, .reason = "kernel contextual contradiction", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
                             if (self.store.node(right.id)) |node| {
-                                node.confidence *= 0.8;
                                 node.contradiction_count += 1;
                                 node.last_contradicted_at = self.clock;
-                                node.belief_state = .contested;
                             }
+                            _ = try self.applyTransition(.{ .target = right.id, .kind = .set_state, .target_state = .contested, .cause = left.id, .reason = "kernel contextual contradiction", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
+                            _ = try self.applyTransition(.{ .target = right.id, .kind = .penalize, .amount = 0.2, .cause = left.id, .reason = "kernel contextual contradiction", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
                         }
                     }
                 }
@@ -776,6 +1158,7 @@ pub const Runtime = struct {
         errdefer runtime.deinit();
         runtime.store = loaded.store;
         runtime.next_id = loaded.next_id;
+        for (runtime.store.transition_records.items) |transition_record| runtime.next_transition_id = @max(runtime.next_transition_id, transition_record.id + 1);
         runtime.clock = loaded.clock;
         runtime.revision = loaded.revision;
         if (try index_journal.recover(&runtime.store, runtime.revision, io, allocator, path)) runtime.index_checkpoint_revision = runtime.revision;

@@ -77,6 +77,174 @@ pub const StructuredReport = struct {
     }
 };
 
+/// Verifies that a state transition produced an observable, attributable change
+/// in the kernel's activation boundary. Host actions remain outside MEML.
+pub const DynamicsCase = struct {
+    task_id: []const u8,
+    before: model.Context,
+    after: model.Context,
+    expected_before: ?u64 = null,
+    expected_after: ?u64 = null,
+};
+
+pub const DynamicsReport = struct {
+    cases: usize = 0,
+    changed: usize = 0,
+    expected_before: usize = 0,
+    expected_after: usize = 0,
+
+    pub fn changeRate(self: DynamicsReport) f64 {
+        return if (self.cases == 0) 0 else @as(f64, @floatFromInt(self.changed)) / @as(f64, @floatFromInt(self.cases));
+    }
+};
+
+pub fn evaluateDynamics(runtime: *runtime_mod.Runtime, cases: []const DynamicsCase, limit: usize, allocator: std.mem.Allocator) !DynamicsReport {
+    var report: DynamicsReport = .{};
+    for (cases) |case| {
+        if (case.task_id.len == 0) return error.InvalidAnnotation;
+        var before = try runtime.activate(case.before, limit, allocator);
+        defer before.deinit(allocator);
+        var after = try runtime.activate(case.after, limit, allocator);
+        defer after.deinit(allocator);
+        report.cases += 1;
+        const before_id: ?u64 = if (before.items.len == 0) null else before.items[0].id;
+        const after_id: ?u64 = if (after.items.len == 0) null else after.items[0].id;
+        if (before_id != after_id) report.changed += 1;
+        if (case.expected_before == null or before_id == case.expected_before) report.expected_before += 1;
+        if (case.expected_after == null or after_id == case.expected_after) report.expected_after += 1;
+    }
+    return report;
+}
+
+/// Held-out outcome case for an empirical procedure forecast. `cutoff` keeps
+/// later feedback out of the estimate, so a passing score cannot be achieved by
+/// reading the answer from the future.
+pub const ProcedurePredictionCase = struct {
+    task_id: []const u8,
+    procedure: u64,
+    context: model.Context = .{},
+    cutoff: i64,
+    expected: model.Outcome,
+};
+
+pub const ProcedurePredictionReport = struct {
+    cases: usize = 0,
+    correct: usize = 0,
+    compatible: usize = 0,
+    brier_sum: f64 = 0,
+
+    pub fn accuracy(self: ProcedurePredictionReport) f64 {
+        return if (self.cases == 0) 0 else @as(f64, @floatFromInt(self.correct)) / @as(f64, @floatFromInt(self.cases));
+    }
+
+    pub fn brier(self: ProcedurePredictionReport) f64 {
+        return if (self.cases == 0) 0 else self.brier_sum / @as(f64, @floatFromInt(self.cases));
+    }
+};
+
+pub const ProcedurePredictionQualityGate = struct {
+    min_cases: usize = 1,
+    min_accuracy: f64 = 0,
+    max_brier: f64 = 1,
+
+    pub fn accepts(self: ProcedurePredictionQualityGate, report: ProcedurePredictionReport) bool {
+        return report.cases >= self.min_cases and report.accuracy() >= self.min_accuracy and report.brier() <= self.max_brier;
+    }
+};
+
+pub fn evaluateProcedurePredictions(runtime: *const runtime_mod.Runtime, cases: []const ProcedurePredictionCase) !ProcedurePredictionReport {
+    var report: ProcedurePredictionReport = .{};
+    for (cases) |case| {
+        if (case.task_id.len == 0) return error.InvalidAnnotation;
+        const prediction = try runtime.predictProcedureAt(case.procedure, case.context, case.cutoff);
+        const actual: f64 = if (case.expected == .success) 1 else 0;
+        const classified_success = prediction.success_probability >= 0.5;
+        if (classified_success == (case.expected == .success)) report.correct += 1;
+        if (prediction.compatible) report.compatible += 1;
+        const difference = prediction.success_probability - actual;
+        report.brier_sum += difference * difference;
+        report.cases += 1;
+    }
+    return report;
+}
+
+/// Evaluates a quality-gated, caller-bounded comparison. Candidates are passed
+/// directly to Runtime; evaluation never uses retrieval to discover extras.
+pub const ProcedureSelectionCase = struct {
+    task_id: []const u8,
+    candidates: []const u64,
+    context: model.Context = .{},
+    gate: model.ProcedureSelectionQualityGate = .{},
+    expected: ?u64 = null,
+};
+
+pub const ProcedureSelectionReport = struct {
+    cases: usize = 0,
+    expected_selected: usize = 0,
+    rejected: usize = 0,
+    eligible: usize = 0,
+
+    pub fn selectionAccuracy(self: ProcedureSelectionReport) f64 {
+        return if (self.cases == 0) 0 else @as(f64, @floatFromInt(self.expected_selected)) / @as(f64, @floatFromInt(self.cases));
+    }
+};
+
+pub fn evaluateProcedureSelection(runtime: *const runtime_mod.Runtime, cases: []const ProcedureSelectionCase, allocator: std.mem.Allocator) !ProcedureSelectionReport {
+    var report: ProcedureSelectionReport = .{};
+    for (cases) |case| {
+        if (case.task_id.len == 0) return error.InvalidAnnotation;
+        var selections = try runtime.selectProcedures(case.candidates, case.context, case.gate, allocator);
+        defer selections.deinit(allocator);
+        report.cases += 1;
+        var selected: ?u64 = null;
+        for (selections.items) |selection| {
+            if (selection.counterfactual_score == null) report.rejected += 1 else report.eligible += 1;
+            if (selection.rank == 1) selected = selection.procedure;
+        }
+        if (selected == case.expected) report.expected_selected += 1;
+    }
+    return report;
+}
+
+/// Tests that an explicitly bounded, multi-objective comparison chooses the
+/// documented winner without retrieving alternatives or treating a forecast as
+/// an observed outcome.
+pub const ProcedureComparisonCase = struct {
+    task_id: []const u8,
+    candidates: []const u64,
+    context: model.Context = .{},
+    policy: model.ProcedureComparisonPolicy,
+    expected: ?u64 = null,
+};
+
+pub const ProcedureComparisonReport = struct {
+    cases: usize = 0,
+    expected_selected: usize = 0,
+    rejected: usize = 0,
+    compared: usize = 0,
+
+    pub fn selectionAccuracy(self: ProcedureComparisonReport) f64 {
+        return if (self.cases == 0) 0 else @as(f64, @floatFromInt(self.expected_selected)) / @as(f64, @floatFromInt(self.cases));
+    }
+};
+
+pub fn evaluateProcedureComparison(runtime: *const runtime_mod.Runtime, cases: []const ProcedureComparisonCase, allocator: std.mem.Allocator) !ProcedureComparisonReport {
+    var report: ProcedureComparisonReport = .{};
+    for (cases) |case| {
+        if (case.task_id.len == 0) return error.InvalidAnnotation;
+        var comparisons = try runtime.compareProcedures(case.candidates, case.context, case.policy, allocator);
+        defer comparisons.deinit(allocator);
+        report.cases += 1;
+        var selected: ?u64 = null;
+        for (comparisons.items) |comparison| {
+            if (comparison.counterfactual_score) |_| report.compared += 1 else report.rejected += 1;
+            if (comparison.rank == 1) selected = comparison.procedure;
+        }
+        if (selected == case.expected) report.expected_selected += 1;
+    }
+    return report;
+}
+
 pub const StructuredQualityGate = struct {
     min_cases: usize = 1,
     min_recall: f64 = 0,

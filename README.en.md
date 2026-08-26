@@ -17,11 +17,11 @@ Semantics and ranking are controlled by a single kernel; indexes, external signa
 
 ## Key Benefits
 
-- **Explainable retrieval**: every activation carries a decomposition of semantic, lexical, temporal, graph, procedural, preference, goal, confidence, and conflict signals.
+- **Explainable retrieval**: every activation carries semantic, lexical, temporal, graph, procedural, preference, goal, confidence, scope, metric, structure, lineage, stability, and conflict contributions; graph propagation is bounded by the kernel and cognitive state.
 - **Stable kernel boundary**: providers only produce candidate IDs; the kernel owns identity, scoring, ordering, limits, conflict handling, and explanations.
-- **Semantic graph and lifecycle**: supports `experience`, `evidence`, `claim`, `memory`, `belief`, `concept`, and `procedure` nodes, plus support, contradiction, derivation, generalization, and step relations. Beliefs can be active, contested, superseded, or archived.
+- **Dynamic cognitive state**: every cognitive record can be active, contested, superseded, or archived. Host-verified bounded transitions persist an immutable audit trail and change future activation conditions; configurable `PlasticityPolicy`, derived stability/attractor state, cutoff-based procedure forecasts, explicit-candidate quality gates, and conservative multi-objective comparisons remain explainable.
 - **Controlled consolidation**: consolidate explicitly in full or incrementally, or enable event-triggered consolidation for later observations; policies control memory, belief, concept, procedure, and neural rules independently.
-- **Recoverable state**: the only supported `MEML13` format saves the graph, structured scopes/metrics/artifacts/structure identity, derivation provenance, belief lifecycle, deterministic `NeuralState`, versioned signal calibration parameters, and verified feedback receipts. Old formats are explicitly rejected; recovery rebuilds derived indexes from the semantic revision.
+- **Recoverable state**: the only supported `MEML14` format saves the graph, structured scopes/metrics/artifacts/structure identity, general cognitive lifecycle, immutable transition audit, derivation provenance, deterministic `NeuralState`, versioned signal calibration parameters, and verified feedback receipts. Old formats are explicitly rejected; recovery rebuilds derived indexes from the semantic revision.
 - **Reproducible verification**: built-in end-to-end, conflict, persistence, rollback, recovery, provider-consistency, and scale-path tests; the benchmark program uses deterministic datasets and reports retrieval-quality metrics.
 
 ## Current Architecture
@@ -53,13 +53,13 @@ Runtime ────────> indexed symbolic backend (default)
 - Run scoped incremental consolidation via `consolidatePending()`, or enable event-triggered consolidation for subsequent `observe()` calls with `enableAutoConsolidation(policy)`. The default `observe()` stays write-only and does not implicitly change derived structure.
 - Handle conflicting beliefs by context: mutually exclusive beliefs can be active simultaneously in different contexts; same-context conflicts become contested and affect later activations.
 - Roll back complete runtime state on an in-memory failure through the atomic consolidation API: semantic graph, derivation records, neural state, IDs, consolidation cursor, pending groups, indexes, and runtime configuration.
-- Record policy outcomes as evidence with `recordFeedback(FeedbackInput)` or the source-language `feedback` after a host `FeedbackVerifier` validates actor and receipt; failures carry a `FailureClass`, unverified outcomes do not change memory, and `FeedbackPolicy` can configure domain success gains and failure discounts.
+- Record policy outcomes as evidence with `recordFeedback(FeedbackInput)` or source-language `feedback` after a host `FeedbackVerifier` validates actor and receipt; use a separate `TransitionVerifier` with bounded `transition()` or DSL `transition` for auditable state changes. Neither boundary directly executes a host Action.
 - Source language provides per-statement structured diagnostics, supports `link` / `unlink` relationship lifecycle operations, and executes whole programs as a transaction.
 - `evaluateAgentSuite()` covers multi-task and context drift; `evaluateAnnotated()` accepts human-annotated sets with task IDs and graded relevance, and can enforce Recall/MRR/NDCG quality gates.
 - Recover interrupted local atomic writes using a journal and a monotonic revision, and reject stale writers through the local `VersionedProvider` CAS.
 - Persist, recover, and retrieve the deterministic `NeuralState`, and versioned weights and biases for `calibrated` providers; these are transparent reference states, not trained model parameters.
 
-See [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md) for behavior notes on consolidation, persistence, and boundary conditions. [`docs/domain-memory.md`](docs/domain-memory.md) describes the shared structured model, adapter boundary, and JSON-lines examples for quantum, AI for Science, and ordinary agents.
+See [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md) for behavior notes on consolidation, persistence, and boundary conditions. [`docs/domain-memory.md`](docs/domain-memory.md) describes the shared structured model, adapter boundary, and JSON-lines examples for quantum, AI for Science, and ordinary agents. [`docs/dynamic-memory.md`](docs/dynamic-memory.md) describes cognitive state, bounded transitions, auditable replay, and state-aware activation.
 
 ## Quick Start
 
@@ -86,7 +86,7 @@ The public entry point is `src/meml.zig`; the core API lives on `Runtime`:
 
 1. Create a runtime with `Runtime.init(allocator)` and write semantic records via `observe()` or the explicit construction APIs.
 2. Retrieve by `Context` with `activate()` or `activateWithStats()`, and read the returned activation signals and statistics.
-3. Configure a host verifier with `setFeedbackVerifier()` first; then call `setFeedbackPolicy()` if domain rules exist. After an agent acts on a retrieval result, call `recordFeedback(.{ .target = id, .outcome = .success, .failure_class = .none, .actor = ..., .receipt = ..., .timestamp = ... })`; in the source language, use `feedback <label> success|failure <failure_class> actor <actor> receipt <receipt> at <timestamp>`, and `unlink <from> <relation> <to>` to remove an explicit relation.
+3. Configure a host verifier with `setFeedbackVerifier()` first; then call `setPlasticityPolicy()` if domain plasticity rules exist. After an agent acts on a retrieval result, call `recordFeedback(.{ .target = id, .outcome = .success, .failure_class = .none, .actor = ..., .receipt = ..., .timestamp = ... })`; in the source language, use `feedback <label> success|failure <failure_class> actor <actor> receipt <receipt> at <timestamp>`, and `unlink <from> <relation> <to>` to remove an explicit relation.
 4. In CI, use `evaluateAnnotated()` to load human-annotated task–context–relevance cases and constrain Recall/MRR/NDCG with a `QualityGate`; when long-term structure is needed, call `consolidateAll()`, `consolidatePending(policy)`, or `enableAutoConsolidation(policy)` for later observations.
 5. Save with `persist()`; it performs a semantic journal plus a revision-bound index checkpoint by default. Restore with `Runtime.recover()`.
 
@@ -106,7 +106,7 @@ The public entry point is `src/meml.zig`; the core API lives on `Runtime`:
 ## Roadmap
 
 1. Per-statement line-level structured diagnostics, labels, `link` / `unlink`, and trusted `feedback` are provided and execute as a whole-program transaction; the next step is token-level column numbers and cross-program symbol resolution only if editor integration is needed.
-2. `FeedbackVerifier`, failure classification, receipt auditing, and configurable `FeedbackPolicy` are implemented; the next step is for concrete tool hosts to add signature, claim, expiry, nonce, and target-binding checks, keeping keys only in the deployment environment.
+2. `FeedbackVerifier`, failure classification, receipt auditing, configurable `PlasticityPolicy`, derived stability, and bounded propagation are implemented; the next step is for concrete tool hosts to add signature, claim, expiry, nonce, and target-binding checks, keeping keys only in the deployment environment.
 3. "retrieval policy → trusted feedback → evidence provenance → persistence → restart recovery → re-retrieval" is covered, with multi-task, context-drift, and human-annotation evaluation interfaces; the next step is to settle real annotation sets and CI baselines rather than extending built-in examples.
 4. The index checkpoint journal is bound to the semantic revision and node manifest; full token/vector index shard persistence and incremental replay performance are still missing and should be validated against benchmark data first.
 5. Default candidate routing is unified with tokenization and case normalization, and index providers must be created from managed `Owned` instances; domain-calibrated learned embeddings, reranking, and neural providers are not yet implemented and should first be validated against human-annotation sets.

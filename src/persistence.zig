@@ -83,7 +83,7 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
     defer file.close(io);
     var buffer: [4096]u8 = undefined;
     var writer = file.writer(io, &buffer);
-    try writer.interface.print("MEML13 {d} {d} {d}\n", .{ revision, next_id, clock });
+    try writer.interface.print("MEML14 {d} {d} {d}\n", .{ revision, next_id, clock });
     for (store.nodes.items) |node| {
         const subject = try encode(store.allocator, node.subject);
         defer store.allocator.free(subject);
@@ -95,7 +95,7 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         defer store.allocator.free(context);
         const result = try encode(store.allocator, node.result);
         defer store.allocator.free(result);
-        try writer.interface.print("N|{d}|{s}|{s}|{s}|{s}|{s}|{s}|{d}|{d}|{d}|{s}|{d}|{d}|{d}|{d}\n", .{ node.id, @tagName(node.kind), subject, predicate, object, context, result, node.timestamp, @as(i64, @intFromFloat(node.confidence * 1_000_000)), @as(i64, @intFromFloat(node.strength * 1_000_000)), @tagName(node.belief_state), node.support_count, node.contradiction_count, node.last_confirmed_at, node.last_contradicted_at });
+        try writer.interface.print("N|{d}|{s}|{s}|{s}|{s}|{s}|{s}|{d}|{d}|{d}|{s}|{d}|{d}|{d}|{d}\n", .{ node.id, @tagName(node.kind), subject, predicate, object, context, result, node.timestamp, @as(i64, @intFromFloat(node.confidence * 1_000_000)), @as(i64, @intFromFloat(node.strength * 1_000_000)), @tagName(node.cognitive_state), node.support_count, node.contradiction_count, node.last_confirmed_at, node.last_contradicted_at });
     }
     for (store.scoped_records.items) |record| {
         const key = try encode(store.allocator, record.scope.key);
@@ -151,6 +151,15 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         const receipt = try encode(store.allocator, record.receipt);
         defer store.allocator.free(receipt);
         try writer.interface.print("F|{d}|{d}|{s}|{s}|{s}|{s}\n", .{ record.evidence, record.target, @tagName(record.outcome), @tagName(record.failure_class), actor, receipt });
+    }
+    for (store.transition_records.items) |record| {
+        const reason = try encode(store.allocator, record.reason);
+        defer store.allocator.free(reason);
+        const actor = try encode(store.allocator, record.actor);
+        defer store.allocator.free(actor);
+        const receipt = try encode(store.allocator, record.receipt);
+        defer store.allocator.free(receipt);
+        try writer.interface.print("X|{d}|{d}|{d}|{s}|{s}|{s}|{d}|{d}|{d}|{d}|{d}|{s}|{s}|{s}\n", .{ record.id, record.target, record.cause orelse 0, @tagName(record.kind), @tagName(record.prior_state), @tagName(record.next_state), @as(i64, @intFromFloat(record.prior_confidence * 1_000_000)), @as(i64, @intFromFloat(record.next_confidence * 1_000_000)), @as(i64, @intFromFloat(record.prior_strength * 1_000_000)), @as(i64, @intFromFloat(record.next_strength * 1_000_000)), record.timestamp, reason, actor, receipt });
     }
     try writer.interface.flush();
 }
@@ -243,7 +252,7 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
     var lines = std.mem.splitScalar(u8, data, '\n');
     const header = lines.next() orelse return error.BadFile;
     var header_fields = std.mem.splitScalar(u8, header, ' ');
-    if (!std.mem.eql(u8, header_fields.next() orelse return error.BadFile, "MEML13")) return error.UnsupportedVersion;
+    if (!std.mem.eql(u8, header_fields.next() orelse return error.BadFile, "MEML14")) return error.UnsupportedVersion;
     loaded.revision = try integer(u64, header_fields.next());
     loaded.next_id = try integer(u64, header_fields.next());
     loaded.clock = try integer(i64, header_fields.next());
@@ -278,7 +287,7 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
                 .timestamp = try integer(i64, fields.next()),
                 .confidence = try scaled(fields.next()),
                 .strength = try scaled(fields.next()),
-                .belief_state = try enumValue(model.BeliefState, fields.next()),
+                .cognitive_state = try enumValue(model.CognitiveState, fields.next()),
                 .support_count = try integer(u32, fields.next()),
                 .contradiction_count = try integer(u32, fields.next()),
                 .last_confirmed_at = try integer(i64, fields.next()),
@@ -361,6 +370,26 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
             defer allocator.free(receipt);
             try finish(&fields);
             try loaded.store.recordFeedback(.{ .evidence = evidence, .target = target, .outcome = outcome, .failure_class = failure_class, .actor = actor, .receipt = receipt });
+        } else if (std.mem.eql(u8, tag, "X")) {
+            const id = try integer(u64, fields.next());
+            const target = try integer(u64, fields.next());
+            const raw_cause = try integer(u64, fields.next());
+            const kind = try enumValue(model.TransitionKind, fields.next());
+            const prior_state = try enumValue(model.CognitiveState, fields.next());
+            const next_state = try enumValue(model.CognitiveState, fields.next());
+            const prior_confidence = try scaled(fields.next());
+            const next_confidence = try scaled(fields.next());
+            const prior_strength = try scaled(fields.next());
+            const next_strength = try scaled(fields.next());
+            const timestamp = try integer(i64, fields.next());
+            const reason = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(reason);
+            const actor = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(actor);
+            const receipt = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(receipt);
+            try finish(&fields);
+            try loaded.store.recordTransition(.{ .id = id, .target = target, .cause = if (raw_cause == 0) null else raw_cause, .kind = kind, .prior_state = prior_state, .next_state = next_state, .prior_confidence = prior_confidence, .next_confidence = next_confidence, .prior_strength = prior_strength, .next_strength = next_strength, .timestamp = timestamp, .reason = reason, .actor = actor, .receipt = receipt });
         } else return error.BadFile;
     }
     try loaded.store.validate();

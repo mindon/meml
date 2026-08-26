@@ -1,0 +1,8 @@
+{"op":"set_verifier","trusted_actors":["trusted-agent"],"receipt_prefix":"receipt-"}
+{"op":"observe","subject":"agent","predicate":"selects","object":"compact-reply","context":"user-preference","result":"success","timestamp":1}
+{"op":"activate","query":"compact-reply","details":true}
+{"op":"transition","target":1,"kind":"set_state","target_state":"contested","reason":"contradictory-feedback","actor":"trusted-agent","receipt":"receipt-1","timestamp":2}
+{"op":"activate","query":"compact-reply","details":true}
+{"op":"activate","query":"compact-reply","activation_policy":"include_contested","details":true}
+{"op":"transition","target":1,"kind":"stabilize","amount":0.2,"reason":"independent-successes","actor":"trusted-agent","receipt":"receipt-2","timestamp":3}
+{"op":"activate","query":"compact-reply","details":true}

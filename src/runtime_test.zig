@@ -10,6 +10,14 @@ fn trustedFeedbackVerifier() meml.FeedbackVerifier {
     return .{ .context = undefined, .verifyFn = verifyTrustedFeedback };
 }
 
+fn verifyTrustedTransition(_: *anyopaque, input: meml.TransitionInput) !void {
+    if (!std.mem.eql(u8, input.actor, "trusted-agent") or !std.mem.startsWith(u8, input.receipt, "receipt-")) return error.UntrustedTransition;
+}
+
+fn trustedTransitionVerifier() meml.model.TransitionVerifier {
+    return .{ .context = undefined, .verifyFn = verifyTrustedTransition };
+}
+
 fn remoteLoadRevision(_: *anyopaque, io: std.Io, path: []const u8) !u64 {
     return meml.storage.VersionedLocal.provider().loadRevision(io, path);
 }
@@ -28,6 +36,227 @@ const test_artifacts_dir = "test-artifacts";
 fn testPath(comptime name: []const u8) []const u8 {
     std.Io.Dir.cwd().createDirPath(std.testing.io, test_artifacts_dir) catch {};
     return test_artifacts_dir ++ "/" ++ name;
+}
+
+test "verified transitions alter future activation and persist audit" {
+    const path = testPath("test-dynamic-memory.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-dynamic-memory.state.journal")) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-dynamic-memory.state.index.journal")) catch {};
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const target = try runtime.observe("agent", "selects", "strategy", "current", "success", 1);
+    try std.testing.expectError(error.TransitionVerifierRequired, runtime.transition(.{ .target = target, .kind = .reinforce, .amount = 0.2, .reason = "test", .actor = "trusted-agent", .receipt = "receipt-x", .timestamp = 2 }));
+    runtime.setTransitionVerifier(trustedTransitionVerifier());
+    const transition_id = try runtime.transition(.{ .target = target, .kind = .set_state, .target_state = .contested, .reason = "contradictory evidence", .actor = "trusted-agent", .receipt = "receipt-1", .timestamp = 2 });
+    try std.testing.expectEqual(@as(u64, 1), transition_id);
+    var active = try runtime.activate(.{ .query = "strategy" }, 1, std.testing.allocator);
+    defer active.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), active.items.len);
+    var contested = try runtime.activate(.{ .query = "strategy", .activation_policy = .include_contested }, 1, std.testing.allocator);
+    defer contested.deinit(std.testing.allocator);
+    try std.testing.expectEqual(target, contested.items[0].id);
+    _ = try runtime.transition(.{ .target = target, .kind = .stabilize, .amount = 0.2, .reason = "repeated evidence", .actor = "trusted-agent", .receipt = "receipt-2", .timestamp = 3 });
+    try runtime.verifyTransitionHistory();
+    try runtime.persist(std.testing.io, path);
+    var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer recovered.deinit();
+    try std.testing.expectEqual(@as(usize, 2), recovered.store.transition_records.items.len);
+    try recovered.verifyTransitionHistory();
+}
+
+test "dynamic evaluation measures state-aware activation change" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    runtime.setTransitionVerifier(trustedTransitionVerifier());
+    const target = try runtime.observe("agent", "selects", "method", "current", "success", 1);
+    _ = try runtime.transition(.{ .target = target, .kind = .set_state, .target_state = .contested, .reason = "conflict", .actor = "trusted-agent", .receipt = "receipt-1", .timestamp = 2 });
+    const cases = [_]meml.DynamicsCase{.{ .task_id = "state-aware-selection", .before = .{ .query = "method", .activation_policy = .include_contested }, .after = .{ .query = "method" }, .expected_before = target, .expected_after = null }};
+    const report = try meml.evaluation.evaluateDynamics(&runtime, &cases, 1, std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), report.changed);
+    try std.testing.expectEqual(@as(usize, 1), report.expected_before);
+}
+
+test "procedural memory carries scoped utility and verified plasticity" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    runtime.setTransitionVerifier(trustedTransitionVerifier());
+    const scopes = [_]meml.Scope{.{ .key = "environment", .value = "current" }};
+    const metrics = [_]meml.Metric{.{ .name = "utility", .value = 0.8, .direction = .maximize }};
+    const procedure = try runtime.record(.{ .kind = .procedure, .subject = "agent", .predicate = "uses", .object = "safe-process", .timestamp = 1, .scopes = &scopes, .metrics = &metrics });
+    _ = try runtime.transition(.{ .target = procedure, .kind = .reinforce, .amount = 0.15, .reason = "verified-procedure-success", .actor = "trusted-agent", .receipt = "receipt-1", .timestamp = 2 });
+    var active = try runtime.activate(.{ .query = "safe-process", .scopes = &scopes }, 1, std.testing.allocator);
+    defer active.deinit(std.testing.allocator);
+    try std.testing.expectEqual(procedure, active.items[0].id);
+    try std.testing.expect(active.items[0].signals.scope > 0.9);
+    try std.testing.expect(active.items[0].signals.metric > 0);
+    try std.testing.expectEqual(@as(f64, 0.65), runtime.store.constNode(procedure).?.confidence);
+}
+
+test "bounded propagation respects cognitive state and edge budgets" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    runtime.setTransitionVerifier(trustedTransitionVerifier());
+    const seed = try runtime.observe("agent", "uses", "seed-process", "current", "success", 1);
+    const hidden = try runtime.observe("agent", "uses", "linked-process", "current", "success", 2);
+    try runtime.support(seed, hidden, 1);
+    _ = try runtime.transition(.{ .target = hidden, .kind = .set_state, .target_state = .contested, .reason = "conflict", .actor = "trusted-agent", .receipt = "receipt-1", .timestamp = 3 });
+    var active_only = try runtime.activateWithStats(.{ .query = "seed-process", .propagation = .{ .max_hops = 1, .edge_limit = 1, .candidate_limit = 2 } }, 2, std.testing.allocator);
+    defer active_only.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), active_only.items.items.len);
+    try std.testing.expectEqual(@as(usize, 1), active_only.stats.edges_examined);
+    var include_contested = try runtime.activateWithStats(.{ .query = "seed-process", .activation_policy = .include_contested, .propagation = .{ .max_hops = 1, .edge_limit = 1, .candidate_limit = 2 } }, 2, std.testing.allocator);
+    defer include_contested.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), include_contested.items.items.len);
+    try std.testing.expectEqual(@as(usize, 1), include_contested.stats.propagated);
+}
+
+test "repeated verified evidence produces a derived stable attractor" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    runtime.setFeedbackVerifier(trustedFeedbackVerifier());
+    try runtime.setPlasticityPolicy(.{ .success = .{ .adjustment = .reinforce, .amount = 0.25 } });
+    const target = try runtime.assert("agent", "uses", "reliable-process", "current", 0.5);
+    _ = try runtime.recordFeedback(.{ .target = target, .outcome = .success, .failure_class = .none, .actor = "trusted-agent", .receipt = "receipt-1", .timestamp = 1 });
+    _ = try runtime.recordFeedback(.{ .target = target, .outcome = .success, .failure_class = .none, .actor = "trusted-agent", .receipt = "receipt-2", .timestamp = 2 });
+    const stable = try runtime.stability(target);
+    try std.testing.expectEqual(meml.AttractorState.stable, stable.state);
+    try std.testing.expectEqual(@as(usize, 2), stable.support);
+    try std.testing.expectEqual(@as(usize, 2), stable.transitions);
+    _ = try runtime.recordFeedback(.{ .target = target, .outcome = .failure, .failure_class = .invalid_result, .actor = "trusted-agent", .receipt = "receipt-3", .timestamp = 3 });
+    try std.testing.expectEqual(meml.AttractorState.contested, (try runtime.stability(target)).state);
+}
+
+test "procedure prediction excludes feedback beyond cutoff and evaluates calibration" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    runtime.setFeedbackVerifier(trustedFeedbackVerifier());
+    const scopes = [_]meml.Scope{.{ .key = "environment", .value = "current" }};
+    const procedure = try runtime.record(.{ .kind = .procedure, .subject = "agent", .predicate = "uses", .object = "reliable-process", .timestamp = 1, .scopes = &scopes });
+    _ = try runtime.recordFeedback(.{ .target = procedure, .outcome = .success, .failure_class = .none, .actor = "trusted-agent", .receipt = "receipt-1", .timestamp = 10 });
+    _ = try runtime.recordFeedback(.{ .target = procedure, .outcome = .success, .failure_class = .none, .actor = "trusted-agent", .receipt = "receipt-2", .timestamp = 20 });
+    _ = try runtime.recordFeedback(.{ .target = procedure, .outcome = .failure, .failure_class = .tool_error, .actor = "trusted-agent", .receipt = "receipt-3", .timestamp = 30 });
+    const before_failure = try runtime.predictProcedureAt(procedure, .{ .scopes = &scopes }, 20);
+    try std.testing.expect(before_failure.compatible);
+    try std.testing.expectEqual(@as(usize, 2), before_failure.samples);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.75), before_failure.success_probability, 0.000001);
+    const after_failure = try runtime.predictProcedureAt(procedure, .{ .scopes = &scopes }, 30);
+    try std.testing.expectEqual(@as(usize, 3), after_failure.samples);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.6), after_failure.success_probability, 0.000001);
+    const path = testPath("test-procedure-prediction.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-procedure-prediction.state.journal")) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-procedure-prediction.state.index.journal")) catch {};
+    try runtime.persist(std.testing.io, path);
+    var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer recovered.deinit();
+    const recovered_prediction = try recovered.predictProcedureAt(procedure, .{ .scopes = &scopes }, 20);
+    try std.testing.expectApproxEqAbs(before_failure.success_probability, recovered_prediction.success_probability, 0.000001);
+    const cases = [_]meml.ProcedurePredictionCase{.{ .task_id = "procedure-success-holdout", .procedure = procedure, .context = .{ .scopes = &scopes }, .cutoff = 20, .expected = .success }};
+    const report = try meml.evaluation.evaluateProcedurePredictions(&runtime, &cases);
+    try std.testing.expect((meml.ProcedurePredictionQualityGate{ .min_accuracy = 1, .max_brier = 0.1 }).accepts(report));
+}
+
+test "procedure quality gate selects only stable compatible verified candidates" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    runtime.setFeedbackVerifier(trustedFeedbackVerifier());
+    try runtime.setPlasticityPolicy(.{ .success = .{ .adjustment = .reinforce, .amount = 0.25 } });
+    const scopes = [_]meml.Scope{.{ .key = "environment", .value = "current" }};
+    const reliable = try runtime.record(.{ .kind = .procedure, .subject = "agent", .predicate = "uses", .object = "reliable-process", .timestamp = 1, .scopes = &scopes });
+    const fragile = try runtime.record(.{ .kind = .procedure, .subject = "agent", .predicate = "uses", .object = "fragile-process", .timestamp = 1, .scopes = &scopes });
+    const hidden = try runtime.record(.{ .kind = .procedure, .subject = "agent", .predicate = "uses", .object = "hidden-process", .timestamp = 1, .scopes = &scopes });
+    for (0..3) |index| _ = try runtime.recordFeedback(.{ .target = reliable, .outcome = .success, .failure_class = .none, .actor = "trusted-agent", .receipt = "receipt-reliable", .timestamp = @intCast(index + 2) });
+    for (0..3) |index| _ = try runtime.recordFeedback(.{ .target = fragile, .outcome = .failure, .failure_class = .tool_error, .actor = "trusted-agent", .receipt = "receipt-fragile", .timestamp = @intCast(index + 10) });
+    const gate = meml.ProcedureSelectionQualityGate{ .min_stability = 0.75, .min_samples = 3, .min_success_probability = 0.6, .min_evidence_coverage = 0.5 };
+    var selections = try runtime.selectProcedures(&[_]u64{ fragile, reliable }, .{ .scopes = &scopes }, gate, std.testing.allocator);
+    defer selections.deinit(std.testing.allocator);
+    try std.testing.expectEqual(reliable, selections.items[0].procedure);
+    try std.testing.expectEqual(@as(?usize, 1), selections.items[0].rank);
+    try std.testing.expect(selections.items[0].status.eligible());
+    try std.testing.expectEqual(fragile, selections.items[1].procedure);
+    try std.testing.expect(selections.items[1].counterfactual_score == null);
+    try std.testing.expect(!selections.items[1].status.active);
+    try std.testing.expect(selections.items[0].procedure != hidden);
+    var mismatched = try runtime.selectProcedures(&[_]u64{reliable}, .{}, gate, std.testing.allocator);
+    defer mismatched.deinit(std.testing.allocator);
+    try std.testing.expect(!mismatched.items[0].status.scope_compatible);
+    try std.testing.expect(mismatched.items[0].counterfactual_score == null);
+    try std.testing.expectError(error.DuplicateProcedureCandidate, runtime.selectProcedures(&[_]u64{ reliable, reliable }, .{ .scopes = &scopes }, gate, std.testing.allocator));
+    const cases = [_]meml.ProcedureSelectionCase{.{ .task_id = "quality-gated-choice", .candidates = &[_]u64{ fragile, reliable }, .context = .{ .scopes = &scopes }, .gate = gate, .expected = reliable }};
+    const report = try meml.evaluation.evaluateProcedureSelection(&runtime, &cases, std.testing.allocator);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), report.selectionAccuracy(), 0.000001);
+}
+
+test "multi-objective comparison ranks explicit procedures and explains rejections" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    runtime.setFeedbackVerifier(trustedFeedbackVerifier());
+    try runtime.setPlasticityPolicy(.{ .success = .{ .adjustment = .reinforce, .amount = 0.25 } });
+    const scopes = [_]meml.Scope{.{ .key = "environment", .value = "current" }};
+    const fast_metrics = [_]meml.Metric{ .{ .name = "cost", .value = 80, .unit = "usd", .direction = .minimize }, .{ .name = "latency", .value = 10, .unit = "ms", .uncertainty = 1, .direction = .minimize } };
+    const cheap_metrics = [_]meml.Metric{ .{ .name = "cost", .value = 20, .unit = "usd", .direction = .minimize }, .{ .name = "latency", .value = 30, .unit = "ms", .uncertainty = 1, .direction = .minimize } };
+    const incomplete_metrics = [_]meml.Metric{.{ .name = "cost", .value = 5, .unit = "usd", .direction = .minimize }};
+    const fast = try runtime.record(.{ .kind = .procedure, .subject = "agent", .predicate = "uses", .object = "fast", .timestamp = 1, .scopes = &scopes, .metrics = &fast_metrics });
+    const cheap = try runtime.record(.{ .kind = .procedure, .subject = "agent", .predicate = "uses", .object = "cheap", .timestamp = 1, .scopes = &scopes, .metrics = &cheap_metrics });
+    const incomplete = try runtime.record(.{ .kind = .procedure, .subject = "agent", .predicate = "uses", .object = "incomplete", .timestamp = 1, .scopes = &scopes, .metrics = &incomplete_metrics });
+    const procedures = [_]u64{ fast, cheap, incomplete };
+    for (procedures) |procedure| {
+        for (0..3) |index| {
+            _ = try runtime.recordFeedback(.{ .target = procedure, .outcome = .success, .failure_class = .none, .actor = "trusted-agent", .receipt = "receipt-success", .timestamp = @intCast(procedure * 10 + index) });
+        }
+    }
+    const objectives = [_]meml.ProcedureObjective{
+        .{ .target = .{ .metric = .{ .name = "cost", .unit = "usd" } }, .direction = .minimize, .weight = 0.2 },
+        .{ .target = .{ .metric = .{ .name = "latency", .unit = "ms" } }, .direction = .minimize, .weight = 0.8, .hard_limit = 40 },
+    };
+    const policy = meml.ProcedureComparisonPolicy{ .min_samples = 3, .objectives = &objectives };
+    var comparisons = try runtime.compareProcedures(&[_]u64{ incomplete, cheap, fast }, .{ .scopes = &scopes }, policy, std.testing.allocator);
+    defer comparisons.deinit(std.testing.allocator);
+    try std.testing.expectEqual(fast, comparisons.items[0].procedure);
+    try std.testing.expectEqual(@as(?usize, 1), comparisons.items[0].rank);
+    try std.testing.expectEqual(cheap, comparisons.items[1].procedure);
+    try std.testing.expectEqual(@as(?usize, 2), comparisons.items[1].rank);
+    try std.testing.expectEqual(incomplete, comparisons.items[2].procedure);
+    try std.testing.expect(comparisons.items[2].counterfactual_score == null);
+    try std.testing.expectEqual(meml.ProcedureComparisonRejection.missing_metric, comparisons.items[2].assessments[1].rejection);
+    try std.testing.expectEqual(@as(usize, 3), comparisons.items.len);
+    const path = testPath("test-procedure-comparison.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-procedure-comparison.state.journal")) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-procedure-comparison.state.index.journal")) catch {};
+    try runtime.persist(std.testing.io, path);
+    var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer recovered.deinit();
+    var recovered_comparisons = try recovered.compareProcedures(&[_]u64{ incomplete, cheap, fast }, .{ .scopes = &scopes }, policy, std.testing.allocator);
+    defer recovered_comparisons.deinit(std.testing.allocator);
+    try std.testing.expectEqual(fast, recovered_comparisons.items[0].procedure);
+    try std.testing.expectEqual(@as(?usize, 1), recovered_comparisons.items[0].rank);
+    const constrained_objectives = [_]meml.ProcedureObjective{.{ .target = .{ .metric = .{ .name = "cost", .unit = "usd" } }, .direction = .minimize, .weight = 1, .hard_limit = 50 }};
+    var constrained = try runtime.compareProcedures(&[_]u64{ fast, cheap }, .{ .scopes = &scopes }, .{ .min_samples = 3, .objectives = &constrained_objectives }, std.testing.allocator);
+    defer constrained.deinit(std.testing.allocator);
+    try std.testing.expectEqual(cheap, constrained.items[0].procedure);
+    try std.testing.expectEqual(meml.ProcedureComparisonRejection.hard_limit_failed, constrained.items[1].assessments[0].rejection);
+    try std.testing.expectError(error.DuplicateProcedureObjective, runtime.compareProcedures(&[_]u64{ fast, cheap }, .{ .scopes = &scopes }, .{ .min_samples = 3, .objectives = &[_]meml.ProcedureObjective{ .{ .target = .stability, .direction = .maximize, .weight = 0.5 }, .{ .target = .stability, .direction = .maximize, .weight = 0.5 } } }, std.testing.allocator));
+    const cases = [_]meml.ProcedureComparisonCase{.{ .task_id = "weighted-explicit-comparison", .candidates = &[_]u64{ incomplete, cheap, fast }, .context = .{ .scopes = &scopes }, .policy = policy, .expected = fast }};
+    const report = try meml.evaluation.evaluateProcedureComparison(&runtime, &cases, std.testing.allocator);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), report.selectionAccuracy(), 0.000001);
+    try std.testing.expectEqual(@as(usize, 1), report.rejected);
+}
+
+test "memory dynamics DSL performs only verified bounded transitions" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    runtime.setTransitionVerifier(trustedTransitionVerifier());
+    const program =
+        \\assert agent selects compact-reply preference confidence 0.5 as style
+        \\transition style reinforce 0.2 actor trusted-agent receipt receipt-1 at 10 reason repeated-success
+    ;
+    var report = try meml.source.execute(&runtime, program, std.testing.allocator);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), report.transitions);
+    try std.testing.expectEqual(@as(f64, 0.7), runtime.store.nodes.items[0].confidence);
+    try runtime.verifyTransitionHistory();
 }
 
 test "context changes activated memory" {
@@ -217,7 +446,7 @@ test "frozen provider contract is conformed to by every backend" {
     }
 }
 
-test "graph backend expands linked candidates after reload" {
+test "kernel bounded propagation expands linked candidates after reload" {
     const path = testPath("test-graph-persistence.state");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     var runtime = meml.Runtime.init(std.testing.allocator);
@@ -229,9 +458,11 @@ test "graph backend expands linked candidates after reload" {
     var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
     defer recovered.deinit();
     try recovered.useGraphBackend();
-    var output = try recovered.activate(.{ .query = "compiler" }, 10, std.testing.allocator);
+    var output = try recovered.activateWithStats(.{ .query = "compiler", .propagation = .{ .max_hops = 1, .edge_limit = 4, .candidate_limit = 4 } }, 10, std.testing.allocator);
     defer output.deinit(std.testing.allocator);
-    try std.testing.expect(output.items.len >= 2);
+    try std.testing.expect(output.items.items.len >= 2);
+    try std.testing.expectEqual(@as(usize, 1), output.stats.propagated);
+    try std.testing.expect(output.stats.edges_examined <= 4);
 }
 
 test "configurable signals improve and measure retrieval" {
@@ -318,7 +549,7 @@ test "self-memory example executes, persists feedback, and remains retrievable a
     const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "examples/self-memory.meml", std.testing.allocator, .limited(32 * 1024));
     defer std.testing.allocator.free(source);
     try std.testing.expect(std.mem.indexOf(u8, source, "line-diagnostics-links-unlinks") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "feedback-policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "plasticity-policy") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "evaluation supports-annotated-multitask-and-context-drift-suites") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "revision-cas") != null);
 
@@ -326,6 +557,7 @@ test "self-memory example executes, persists feedback, and remains retrievable a
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     var runtime = meml.Runtime.init(std.testing.allocator);
     runtime.setFeedbackVerifier(trustedFeedbackVerifier());
+    runtime.setTransitionVerifier(trustedTransitionVerifier());
     var report = try meml.source.execute(&runtime, source, std.testing.allocator);
     defer report.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), report.feedback);
@@ -534,7 +766,7 @@ test "belief conflict lowers confidence and creates contradiction relation" {
     var lowered: usize = 0;
     for (runtime.store.nodes.items) |node| {
         if (node.kind == .belief and node.confidence < 0.7) lowered += 1;
-        if (node.kind == .belief and node.belief_state == .contested) try std.testing.expect(node.contradiction_count > 0);
+        if (node.kind == .belief and node.cognitive_state == .contested) try std.testing.expect(node.contradiction_count > 0);
     }
     try std.testing.expectEqual(@as(usize, 2), lowered);
 }
@@ -548,7 +780,6 @@ test "belief lifecycle states filter retrieval and survive persistence" {
     const old_belief = try runtime.infer(old);
     const new_belief = try runtime.infer(replacement);
     try runtime.supersedeBelief(old_belief, new_belief);
-    try runtime.setBeliefState(new_belief, .active);
     try runtime.persist(std.testing.io, path);
     var output = try runtime.activate(.{ .query = "old", .situation = "legacy" }, 10, std.testing.allocator);
     defer output.deinit(std.testing.allocator);
@@ -557,8 +788,8 @@ test "belief lifecycle states filter retrieval and survive persistence" {
 
     var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
     defer recovered.deinit();
-    try std.testing.expectEqual(meml.BeliefState.superseded, recovered.store.constNode(old_belief).?.belief_state);
-    try std.testing.expectEqual(meml.BeliefState.active, recovered.store.constNode(new_belief).?.belief_state);
+    try std.testing.expectEqual(meml.CognitiveState.superseded, recovered.store.constNode(old_belief).?.cognitive_state);
+    try std.testing.expectEqual(meml.CognitiveState.active, recovered.store.constNode(new_belief).?.cognitive_state);
     try std.testing.expect(recovered.store.constNode(old_belief).?.last_confirmed_at >= 0);
 }
 
@@ -577,7 +808,7 @@ test "conflicting beliefs remain active across different situations" {
         if (node.kind != .belief or !std.mem.eql(u8, node.result, "consolidated repetition")) continue;
         if (std.mem.eql(u8, node.object, "python")) legacy_belief = node.id;
         if (std.mem.eql(u8, node.object, "typescript")) current_belief = node.id;
-        try std.testing.expectEqual(meml.BeliefState.active, node.belief_state);
+        try std.testing.expectEqual(meml.CognitiveState.active, node.cognitive_state);
     }
     try std.testing.expect(runtimeHasRelation(&runtime, legacy_belief, current_belief, .contradicts));
 
@@ -634,10 +865,10 @@ test "strict persistence rejects malformed and dangling state" {
     const path = testPath("test-invalid-state.state");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     const cases = [_][]const u8{
-        "MEML13 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0|0|extra\n",
-        "MEML13 0 2 0\nR|1|2|supports|1000000\n",
-        "MEML13 0 2 0\nL|1|1|500000|1\n",
-        "MEML13 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0\n",
+        "MEML14 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0|0|extra\n",
+        "MEML14 0 2 0\nR|1|2|supports|1000000\n",
+        "MEML14 0 2 0\nL|1|1|500000|1\n",
+        "MEML14 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0\n",
     };
     for (cases) |input| {
         var file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
@@ -916,17 +1147,17 @@ test "agent feedback becomes evidence and changes future strategy confidence" {
     try std.testing.expectEqual(@as(usize, 3), runtime.store.nodes.items.len);
 }
 
-test "feedback policy is domain-configurable and transaction-safe" {
+test "plasticity policy is domain-configurable and transaction-safe" {
     var runtime = meml.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     runtime.setFeedbackVerifier(trustedFeedbackVerifier());
-    try runtime.setFeedbackPolicy(.{ .success_increment = 0.2, .tool_error_multiplier = 0.5 });
+    try runtime.setPlasticityPolicy(.{ .success = .{ .adjustment = .reinforce, .amount = 0.2 }, .tool_error = .{ .state = .contested, .adjustment = .penalize, .amount = 0.5 } });
     const strategy = try runtime.assert("agent", "uses", "domain-tool", "browser", 0.6);
     _ = try runtime.recordFeedback(.{ .target = strategy, .outcome = .success, .failure_class = .none, .actor = "trusted-agent", .receipt = "receipt-domain-success", .timestamp = 1 });
     try std.testing.expectApproxEqAbs(@as(f64, 0.8), runtime.store.constNode(strategy).?.confidence, 0.000001);
     _ = try runtime.recordFeedback(.{ .target = strategy, .outcome = .failure, .failure_class = .tool_error, .actor = "trusted-agent", .receipt = "receipt-domain-failure", .timestamp = 2 });
     try std.testing.expectApproxEqAbs(@as(f64, 0.4), runtime.store.constNode(strategy).?.confidence, 0.000001);
-    try std.testing.expectError(error.InvalidFeedbackPolicy, runtime.setFeedbackPolicy(.{ .tool_error_multiplier = std.math.nan(f64) }));
+    try std.testing.expectError(error.InvalidPlasticityPolicy, runtime.setPlasticityPolicy(.{ .tool_error = .{ .adjustment = .penalize, .amount = std.math.nan(f64) } }));
     _ = try runtime.recordFeedback(.{ .target = strategy, .outcome = .failure, .failure_class = .tool_error, .actor = "trusted-agent", .receipt = "receipt-domain-failure-2", .timestamp = 3 });
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), runtime.store.constNode(strategy).?.confidence, 0.000001);
 }
@@ -1068,16 +1299,17 @@ test "documented MEML examples parse and execute" {
         var runtime = meml.Runtime.init(std.testing.allocator);
         defer runtime.deinit();
         runtime.setFeedbackVerifier(trustedFeedbackVerifier());
+        runtime.setTransitionVerifier(trustedTransitionVerifier());
         var report = try meml.source.execute(&runtime, input, std.testing.allocator);
         defer report.deinit(std.testing.allocator);
         try std.testing.expect(runtime.store.nodes.items.len > 0);
     }
 }
 
-test "structured records isolate scope and survive MEML13 recovery" {
-    const path = testPath("test-structured-meml13.state");
-    const journal = testPath("test-structured-meml13.state.journal");
-    const index_journal = testPath("test-structured-meml13.state.index.journal");
+test "structured records isolate scope and survive MEML14 recovery" {
+    const path = testPath("test-structured-meml14.state");
+    const journal = testPath("test-structured-meml14.state.journal");
+    const index_journal = testPath("test-structured-meml14.state.index.journal");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, journal) catch {};
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, index_journal) catch {};
@@ -1118,7 +1350,7 @@ test "structured evaluation enforces explainable feasibility" {
     try std.testing.expect((meml.StructuredQualityGate{ .min_recall = 1, .min_feasibility = 1 }).accepts(report));
 }
 
-test "MEML13 loader rejects old state headers without compatibility" {
+test "MEML14 loader rejects old state headers without compatibility" {
     const path = testPath("test-unsupported-version.state");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     var file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });

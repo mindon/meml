@@ -131,7 +131,70 @@ _ = id;
 
 `science.Generic.adapter()` 提供同一通用校验边界；`quantum.adapter()` 仅是可选的量子输入规范化示例。二者均不能直接写 `Store`。详见 [`docs/domain-memory.md`](docs/domain-memory.md)。
 
-### 2.4 核心 API
+### 2.4 动态认知状态
+
+MEML 只改变可审计的记忆状态，不直接选择或执行宿主 Action。宿主必须先安装 `TransitionVerifier`，再调用受限的 `transition()`；每次变更都会以 `TransitionRecord` 持久化在 `MEML14` 中。
+
+```zig
+runtime.setTransitionVerifier(host_transition_verifier);
+_ = try runtime.transition(.{
+    .target = procedure_id,
+    .kind = .stabilize,
+    .amount = 0.1,
+    .reason = "verified-repeat-success",
+    .actor = "trusted-runner",
+    .receipt = "verified-receipt",
+    .timestamp = now,
+});
+
+var current = try runtime.activate(.{ .query = "procedure" }, 5, a); // 默认只激活 active
+var audit = try runtime.activate(.{ .query = "procedure", .activation_policy = .include_historical }, 5, a);
+defer current.deinit(a);
+defer audit.deinit(a);
+```
+
+受限 DSL：`transition <label> reinforce|penalize|decay|stabilize <0..1> actor <actor> receipt <receipt> at <timestamp> reason <reason>`；`set_state` 则将数值替换为 `active|contested|superseded|archived`。详见 [`docs/dynamic-memory.md`](docs/dynamic-memory.md) 和 [`examples/dynamic-memory.jsonl`](examples/dynamic-memory.jsonl)。
+
+### 2.5 Procedure 选择质量门
+
+`selectProcedures()` 只对宿主显式给定的 procedure ID 做只读比较，不会检索、扩张候选或执行 Action。gate 要求 active 状态、严格 scope 匹配、稳定性、verified outcome 样本数、成功概率和证据覆盖度均达标；不达标项保留拒绝原因，但没有排名。
+
+```zig
+var choices = try runtime.selectProcedures(
+    &.{ procedure_a, procedure_b },
+    .{ .scopes = &scopes },
+    .{ .min_stability = 0.75, .min_samples = 3, .min_success_probability = 0.6, .min_evidence_coverage = 0.5 },
+    a,
+);
+defer choices.deinit(a);
+// rank == 1 只是当前显式候选中的经验建议，宿主仍决定是否执行。
+```
+
+`predictProcedureAt()` 适合带 cutoff 的历史预测评估；`selectProcedures()` 则只使用当前认知状态，避免把未来状态混入历史选择回放。JSONL 示例见 [`examples/procedure-selection.jsonl`](examples/procedure-selection.jsonl)。
+
+### 2.6 显式多目标比较
+
+`compareProcedures()` 仅比较调用方提供的 procedure ID，并要求调用方显式声明目标、方向、权重和可选硬约束。目标可为 `stability`、`success_probability`、`evidence_coverage`，或精确的 metric `name + unit`；内核不会推断领域语义或进行单位换算。
+
+```zig
+const objectives = [_]meml.ProcedureObjective{
+    .{ .target = .{ .metric = .{ .name = "cost", .unit = "usd" } }, .direction = .minimize, .weight = 0.2 },
+    .{ .target = .{ .metric = .{ .name = "latency", .unit = "ms" } }, .direction = .minimize, .weight = 0.8, .hard_limit = 40 },
+};
+var comparisons = try runtime.compareProcedures(
+    &.{ fast_procedure, cheap_procedure },
+    .{ .scopes = &scopes },
+    .{ .min_samples = 3, .objectives = &objectives },
+    a,
+);
+defer comparisons.deinit(a);
+```
+
+metric 的 uncertainty 会以保守方向纳入：maximize 取 `value - uncertainty`，minimize 取 `value + uncertainty`。缺 metric、方向冲突或硬约束失败的候选没有 score/rank，但保留逐目标拒绝原因。该 API 不调用检索、backend、图扩张、工具或 Action。示例见 [`examples/procedure-comparison.jsonl`](examples/procedure-comparison.jsonl)。
+
+### 2.7 核心 API
+
+### 2.5 核心 API
 
 `Runtime` 的公开方法（`src/runtime.zig`）：
 
@@ -144,13 +207,17 @@ _ = id;
 | | `infer(id) !u64` | 由节点推导新节点 |
 | 关系 | `link(from, kind, to, weight)` / `unlink(from, kind, to)` | 建 / 删显式关系 |
 | | `support(from, to, weight)` / `contradict(from, to)` | 支撑 / 矛盾 |
-| 信念 | `setBeliefState(id, state)` / `supersedeBelief(old, replacement)` | 信念生命周期 |
+| 认知状态 | `supersedeBelief(old, replacement)` | 信念替代；其状态变化写入审计 |
+| 动态转移 | `setTransitionVerifier(verifier)` / `clearTransitionVerifier()` | 宿主信任边界 |
+| | `transition(input) !u64` / `verifyTransitionHistory()` | 有界状态改变 / 审计连续性 |
 | 抽象 | `generalize(ids, concept) !u64` / `inferProcedure(ids, name) !u64` | 归纳概念 / 过程 |
 | 检索 | `activate(context, limit, allocator) !ArrayList(Activation)` | 上下文检索 |
 | | `activateWithStats(context, limit, allocator) !retrieval.Result` | 检索并返回候选/评分统计 |
+| 过程决策 | `stability(id)` / `predictProcedureAt(id, context, cutoff)` | 派生稳定性 / 历史 outcome 估计 |
+| | `selectProcedures(ids, context, gate, allocator)` | 仅显式候选的质量门与经验比较 |
 | 信号 | `addSignalProvider(provider)` / `setSignalCalibration(weight, bias)` / `addCalibratedSignalProvider()` | 接入可替换信号 |
 | 反馈 | `setFeedbackVerifier(verifier)` / `clearFeedbackVerifier()` | 信任边界 |
-| | `setFeedbackPolicy(policy)` / `recordFeedback(input) !u64` | 回写结果 |
+| | `setPlasticityPolicy(policy)` / `recordFeedback(input) !u64` | 已验证结果驱动的可塑性 |
 | 整合 | `consolidate()` / `consolidateAll()` / `consolidatePending(policy)` | 显式整合 |
 | | `consolidateWithPolicy(policy)` / `consolidateAllAtomic(policy)` / `consolidatePendingAtomic(policy)` | 策略化 / 原子整合 |
 | | `consolidateNeural(consolidator) !usize` | 确定性 neural 整合 |
@@ -165,7 +232,8 @@ _ = id;
 ```zig
 pub const Kind = enum { experience, evidence, claim, memory, belief, concept, procedure, context };
 pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes };
-pub const BeliefState = enum { active, contested, superseded, archived };
+pub const CognitiveState = enum { active, contested, superseded, archived };
+pub const TransitionKind = enum { set_state, reinforce, penalize, stabilize, decay };
 pub const Outcome = enum { success, failure };
 pub const FailureClass = enum { none, timeout, transport, tool_error, invalid_result, policy_denied, unauthorized, cancelled, unknown };
 ```
@@ -237,11 +305,14 @@ meml.neural.retrievalProvider()
 | `unlink` | `from,kind,to` | `{ok}` |
 | `support` | `from,to,weight` | `{ok}` |
 | `contradict` | `from,to` | `{ok}` |
-| `set_belief_state` | `id,state` | `{ok}` |
+| `transition` | `target,kind,target_state|amount,cause?,reason,actor,receipt,timestamp` | `{ok,transition}` |
 | `supersede` | `old,replacement` | `{ok}` |
 | `generalize` | `ids,concept` | `{ok,id}` |
 | `procedure` | `ids,name` | `{ok,id}` |
-| `activate` | `query,goal,user,situation,now,preferred,resolve_conflicts,limit,stats,details` | `{ok,activations}` |
+| `activate` | `query,goal,user,situation,now,preferred,scopes,structure,activation_policy,minimum_stability,propagation,resolve_conflicts,limit,stats,details` | `{ok,activations}` |
+| `predict_procedure` | `procedure,scopes?,cutoff` | `{ok,success_probability,evidence_coverage,…}` |
+| `select_procedures` | `ids,scopes?,gate?` | `{ok,selections}`；仅比较显式候选 |
+| `compare_procedures` | `ids,scopes?,min_samples?,objectives` | `{ok,comparisons}`；显式目标的保守多目标比较 |
 | `feedback` | `target,outcome,failure_class,actor,receipt,timestamp` | `{ok,evidence}` |
 | `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,统计}` |
 | `auto_consolidate` | `enable,…` | `{ok}` |
@@ -252,7 +323,7 @@ meml.neural.retrievalProvider()
 | `exec` | `program` | `{ok,统计}` |
 | `set_verifier` | `trusted_actors,receipt_prefix` | `{ok}` |
 | `clear_verifier` | — | `{ok}` |
-| `set_feedback_policy` | `success_increment,timeout_multiplier,…` | `{ok}` |
+| `set_plasticity_policy` | `success?,timeout?,transport?,tool_error?,…`（每项含 `state?`,`adjustment?`,`amount`） | `{ok}` |
 
 枚举取值：
 

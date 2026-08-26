@@ -1,0 +1,13 @@
+{"op":"set_verifier","trusted_actors":["trusted-agent"],"receipt_prefix":"receipt-"}
+{"op":"set_plasticity_policy","success":{"adjustment":"reinforce","amount":0.25}}
+{"op":"observe","subject":"agent","predicate":"performs","object":"reliable-process","context":"current","result":"success","timestamp":1}
+{"op":"observe","subject":"agent","predicate":"performs","object":"fragile-process","context":"current","result":"success","timestamp":1}
+{"op":"procedure","ids":[1],"name":"reliable-process"}
+{"op":"procedure","ids":[2],"name":"fragile-process"}
+{"op":"feedback","target":3,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-reliable-1","timestamp":10}
+{"op":"feedback","target":3,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-reliable-2","timestamp":20}
+{"op":"feedback","target":3,"outcome":"success","failure_class":"none","actor":"trusted-agent","receipt":"receipt-reliable-3","timestamp":30}
+{"op":"feedback","target":4,"outcome":"failure","failure_class":"tool_error","actor":"trusted-agent","receipt":"receipt-fragile-1","timestamp":10}
+{"op":"feedback","target":4,"outcome":"failure","failure_class":"tool_error","actor":"trusted-agent","receipt":"receipt-fragile-2","timestamp":20}
+{"op":"feedback","target":4,"outcome":"failure","failure_class":"tool_error","actor":"trusted-agent","receipt":"receipt-fragile-3","timestamp":30}
+{"op":"select_procedures","ids":[4,3],"gate":{"min_stability":0.75,"min_samples":3,"min_success_probability":0.6,"min_evidence_coverage":0.5}}

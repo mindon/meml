@@ -10,6 +10,11 @@ fn verifyTrustedFeedback(_: *anyopaque, input: meml.FeedbackInput) anyerror!void
         return error.UntrustedFeedback;
 }
 
+fn verifyTrustedTransition(_: *anyopaque, input: meml.TransitionInput) anyerror!void {
+    if (!std.mem.eql(u8, input.actor, "trusted-agent") or !std.mem.startsWith(u8, input.receipt, "receipt-"))
+        return error.UntrustedTransition;
+}
+
 fn nodeText(runtime: *const meml.Runtime, id: u64) void {
     if (runtime.store.constNode(id)) |node| {
         std.debug.print("#{d} [{s}] {s} {s} {s}   (conf={d:.2} strength={d:.2})", .{
@@ -27,8 +32,8 @@ fn printActivation(runtime: *const meml.Runtime, name: []const u8, activations: 
         nodeText(runtime, act.id);
         const s = act.signals;
         std.debug.print(
-            "\n        semantic={d:.2} lexical={d:.2} temporal={d:.2} causal={d:.2} procedural={d:.2} preference={d:.2} goal={d:.2} confidence={d:.2} contradiction={d:.2}\n",
-            .{ s.semantic, s.lexical, s.temporal, s.causal, s.procedural, s.preference, s.goal, s.confidence, s.contradiction },
+            "\n        semantic={d:.2} lexical={d:.2} temporal={d:.2} causal={d:.2} procedural={d:.2} preference={d:.2} goal={d:.2} confidence={d:.2} stability={d:.2} contradiction={d:.2}\n",
+            .{ s.semantic, s.lexical, s.temporal, s.causal, s.procedural, s.preference, s.goal, s.confidence, s.stability, s.contradiction },
         );
     }
 }
@@ -55,18 +60,19 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var runtime = meml.Runtime.init(allocator);
     defer runtime.deinit();
     runtime.setFeedbackVerifier(.{ .context = undefined, .verifyFn = verifyTrustedFeedback });
+    runtime.setTransitionVerifier(.{ .context = undefined, .verifyFn = verifyTrustedTransition });
 
     var report = try meml.source.execute(&runtime, input, allocator);
     defer report.deinit(allocator);
 
     std.debug.print("== MEML demo: {s} ==\n", .{file});
     std.debug.print(
-        "  observed={d} asserted={d} feedback={d} consolidated={d} neural_artifacts={d}\n",
-        .{ report.observed, report.asserted, report.feedback, report.consolidated, report.neural_artifacts },
+        "  observed={d} asserted={d} feedback={d} transitions={d} consolidated={d} neural_artifacts={d}\n",
+        .{ report.observed, report.asserted, report.feedback, report.transitions, report.consolidated, report.neural_artifacts },
     );
 
     // 标签顺序与 examples/demo.meml 中的 activate 语句一一对应。
-    const context_names = [_][]const u8{ "performance", "data", "privacy", "performance" };
+    const context_names = [_][]const u8{ "performance", "data", "privacy", "performance", "performance after transition" };
     for (report.activations.items, 0..) |act, i| {
         const label = if (i < context_names.len) context_names[i] else "unknown";
         printActivation(&runtime, label, act);
