@@ -1,0 +1,110 @@
+name: Release meml-cli
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag in vMAJOR.MINOR.PATCH format"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - run: zig build test
+
+  build:
+    name: Build ${{ matrix.asset }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-linux-musl
+            asset: x86_64-linux
+            archive: tar.gz
+          - target: aarch64-linux-musl
+            asset: aarch64-linux
+            archive: tar.gz
+          - target: x86_64-macos
+            asset: x86_64-macos
+            archive: tar.gz
+          - target: aarch64-macos
+            asset: aarch64-macos
+            archive: tar.gz
+          - target: x86_64-windows-gnu
+            asset: x86_64-windows
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build release binary
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
+      - name: Package meml-cli
+        env:
+          ASSET: ${{ matrix.asset }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          mkdir -p dist
+          if [[ "$ASSET" == *windows* ]]; then
+            binary="meml-cli.exe"
+          else
+            binary="meml-cli"
+          fi
+          cp "zig-out/bin/$binary" "dist/$binary"
+          if [[ "$ARCHIVE" == "zip" ]]; then
+            (cd dist && zip "meml-cli-$ASSET.zip" "$binary")
+          else
+            tar -C dist -czf "dist/meml-cli-$ASSET.tar.gz" "$binary"
+          fi
+          rm "dist/$binary"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meml-cli-${{ matrix.asset }}
+          path: dist/meml-cli-${{ matrix.asset }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Assemble checksums
+        run: |
+          mkdir -p release
+          find dist -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release/ \;
+          cd release
+          sha256sum meml-cli-* > SHA256SUMS
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          TARGET: ${{ github.sha }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag must use vMAJOR.MINOR.PATCH format: $TAG" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* --target "$TARGET" --title "MEML CLI $TAG" --generate-notes
+          fi

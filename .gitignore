@@ -4,4 +4,5 @@ test-artifacts/
 work/
 .DS_Store
 .*/
+!.github/
 meml.state*

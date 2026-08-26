@@ -46,7 +46,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
 
-    var args = std.process.Args.Iterator.init(minimal.args);
+    var args = try std.process.Args.Iterator.initAllocator(minimal.args, allocator);
+    defer args.deinit();
     _ = args.next(); // skip program name
     const file = args.next() orelse default_demo_file;
 

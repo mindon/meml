@@ -1,0 +1,9 @@
+{
+  "name": "meml-deepseek-harness-plugin",
+  "private": true,
+  "type": "module",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  }
+}

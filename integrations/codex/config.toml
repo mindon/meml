@@ -1,0 +1,17 @@
+# Copy this server block into ~/.codex/config.toml or <project>/.codex/config.toml.
+# Set absolute paths for your machine before use.
+
+[mcp_servers.meml]
+command = "node"
+args = ["/ABSOLUTE/PATH/TO/meml/integrations/mcp/meml-mcp.mjs"]
+cwd = "/ABSOLUTE/PATH/TO/YOUR/PROJECT"
+startup_timeout_sec = 20
+tool_timeout_sec = 30
+enabled_tools = ["meml_recall"]
+default_tools_approval_mode = "approve"
+
+[mcp_servers.meml.env]
+MEML_BIN = "/ABSOLUTE/PATH/TO/meml/zig-out/bin/meml-cli"
+MEML_STATE_PATH = ".meml/codex.state"
+MEML_ACTOR = "codex"
+MEML_RECEIPT_PREFIX = "codex-verified-"

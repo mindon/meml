@@ -68,6 +68,12 @@ Runtime ────────> indexed symbolic backend (default)
 
 库（`meml`）、命令行（`meml-cli`）与源语言脚本（`.meml`）的完整操作手册见 [`USAGE.md`](USAGE.md)。
 
+### Agent 插件与 Skill
+
+[`integrations/`](integrations/README.md) 提供 Pi Agent、DeepSeek Harness、WorkBuddy、Codex 与 Claude Code 的本地集成：每个集成注册只读 `meml_recall`，并提供 `meml-agent-memory` Skill。执行结果只能由宿主的已验证工具生命周期回写，模型不能自报反馈。
+
+推送 `vMAJOR.MINOR.PATCH` 标签会触发 GitHub Actions，发布 Linux（x86_64 / aarch64）、macOS（x86_64 / aarch64）和 Windows（x86_64）的 `meml-cli` 压缩包及 `SHA256SUMS`。也可通过 Actions 的 `workflow_dispatch` 手动指定版本标签。
+
 ```sh
 zig fmt build.zig src/*.zig
 zig build
