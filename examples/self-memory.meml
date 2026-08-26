@@ -16,6 +16,10 @@ assert meml evaluation supports-annotated-multitask-and-context-drift-suites qua
 assert meml remote-transport preserves-revision-cas durability confidence 0.99 as remote_cas
 assert meml calibrated-provider uses-transparent-versioned-parameters retrieval confidence 0.95 as calibrated
 assert meml learned-embeddings-and-model-checkpoints not-persisted boundary confidence 0.99 as model_boundary
+assert meml provides-generic-structured-evidence-metrics-scopes-artifacts-and-lineage capability architecture confidence 0.99 as structured_kernel
+assert meml keeps-domain-entities-in-adapters-not-kernel boundary architecture confidence 0.99 as adapter_boundary
+assert meml persists-only-meml13-and-rejects-old-state-formats state durability confidence 0.99 as meml13
+assert meml evaluates-structured-relevance-and-feasibility quality-gate quality confidence 0.99 as structured_evaluation
 
 # Agent 应用闭环：策略被检索后，真实执行结果以 evidence 写回目标，
 # 形成 supports 或 contradicts 关系，并调整下次上下文检索的置信度与强度。
@@ -23,6 +27,10 @@ assert meml strategy-feedback improves-future-contextual-selection agent confide
 feedback feedback_loop success none actor trusted-agent receipt receipt-self-memory at 20260824
 link feedback_loop supports kernel weight 1
 link durable_state supports safety weight 1
+link structured_kernel supports kernel weight 1
+link adapter_boundary supports providers weight 1
+link meml13 supports durable_state weight 1
+link structured_evaluation supports evaluation_suite weight 1
 
 # 默认 observe 只记录经验；整合路径形成长期结构。
 observe meml default-observe keeps-derived-structure-unchanged product success at 20260824

@@ -30,7 +30,7 @@ Agent 可先按 `Context` 检索候选策略、工具偏好或过程，再通过
 - `FeedbackVerifier` 在任何状态写入之前校验 actor、receipt 和业务结果；未配置、校验拒绝或结构不合法的反馈不会创建 evidence，也不会改变目标评分。
 - 每次已验证反馈都会创建带时间戳的 `evidence` 节点，并以 `supports` 或 `contradicts` 关系保留对目标的来源，同时持久化 outcome、failure class、actor 与 receipt。
 - 默认策略会将目标 confidence 与 strength 各增加 `0.1`，上限为 `1`；失败默认按类别降权：timeout `0.95`、transport `0.9`、tool_error `0.8`、invalid_result `0.7`、unknown `0.85`；policy_denied、unauthorized 与 cancelled 不改变评分。宿主可通过经过范围校验的 `setFeedbackPolicy()` 覆盖这些领域参数。
-- 该状态随 `MEML12` 持久化并参与后续激活的 confidence 信号；它不是模型训练或自动参数学习。
+- 该状态随 `MEML13` 持久化并参与后续激活的 confidence 信号；它不是模型训练或自动参数学习。
 - 反馈写入本身是完整运行时事务。MEML 不内置身份、授权、签名或网络验证；调用方须在宿主边界提供认证、授权、回执验证和敏感数据脱敏。
 
 ## 信念与冲突
@@ -46,13 +46,13 @@ Agent 可先按 `Context` 检索候选策略、工具偏好或过程，再通过
 
 原子整合会保存完整运行时快照：语义存储、ID 与时钟、派生索引、待处理组、整合游标、signal pipeline 以及自动整合配置。注入失败时恢复完整快照并重建后端索引；成功时才提交该批变更，待处理组可在回滚后重试。
 
-`persist()` 与 `persistAtomic()` 都将完整 `MEML12` 状态写入 `<path>.journal`，同步、校验后原子替换目标文件，并写入 `<path>.index.journal`：它保存语义 revision 与有序节点 ID 清单。恢复只接受 revision 和节点集合均匹配的索引 checkpoint；不匹配的 checkpoint 会被删除，派生索引仍由语义状态重建。`recover()` 会检测遗留语义 journal：有效且更新的 journal 被重放，陈旧或无效 journal 被删除。持久化采用非阻塞单写者锁；并发写入者收到 `WouldBlock`，而不是竞争创建 journal 或替换状态。
+`persist()` 与 `persistAtomic()` 都将完整 `MEML13` 状态写入 `<path>.journal`，同步、校验后原子替换目标文件，并写入 `<path>.index.journal`：它保存语义 revision 与有序节点 ID 清单。恢复只接受 revision 和节点集合均匹配的索引 checkpoint；不匹配的 checkpoint 会被删除，派生索引仍由语义状态重建。`recover()` 会检测遗留语义 journal：有效且更新的 journal 被重放，陈旧或无效 journal 被删除。持久化采用非阻塞单写者锁；锁文件保留稳定 inode，并发写入者收到 `WouldBlock`。
 
 本地保证范围是使用 MEML API 的文件系统调用。远程 CAS 由 `storage.Remote.Transport` 交给宿主实现；MEML 不自行发起网络请求。认证、TLS、端点 allowlist、目录元数据 fsync、生产远程存储一致性以及绕过 API 的锁协作不在当前保证范围内。
 
 ## 保存与恢复的状态
 
-`MEML12` 保存语义节点、关系、推导记录、指纹组及成员、信念生命周期字段、确定性 `NeuralState`、学习型 signal 的版本化权重与偏置、经过验证的反馈审计记录，以及单调递增的提交 revision。加载器只接受完整、严格的 `MEML12` 记录：节点 ID、图引用、指纹计数、神经 artifact、反馈 evidence/target/receipt 和 provider 状态均需通过校验；恢复时会以 revision 选择比目标更新的有效 journal，并从语义记录重建 provider 索引。
+`MEML13` 保存语义节点、通用结构化范围/指标/制品/结构身份、关系、推导记录、指纹组及成员、信念生命周期字段、确定性 `NeuralState`、学习型 signal 的版本化权重与偏置、经过验证的反馈审计记录，以及单调递增的提交 revision。加载器只接受完整、严格且规范排序的 `MEML13` 记录；旧格式返回 `UnsupportedVersion`，不提供迁移、双写或兼容读取。节点 ID、图引用、指标范围、制品摘要、指纹计数、神经 artifact、反馈 evidence/target/receipt 和 provider 状态均需通过校验；恢复时会以 revision 选择比目标更新的有效 journal，并从语义记录重建 provider 索引。
 
 确定性 neural artifact 会创建包含 artifact ID、activation count、strength 和版本的 `NeuralState`。该状态在恢复后仍被参考神经检索 provider 使用，测试会比较有无该状态时的检索信号。`calibrated` provider 则消费持久化的透明参数，仍由内核控制最终排序与解释。这证明 artifact 和校准状态会影响后续检索，不代表模型训练，也不代表学习 embedding、模型权重或二进制检查点已经被保存。
 

@@ -173,24 +173,41 @@ pub const Runtime = struct {
     }
 
     fn make(self: *Runtime, kind: model.Kind, subject: []const u8, predicate: []const u8, object: []const u8, context: []const u8, result: []const u8, confidence: f64, timestamp: i64) !u64 {
-        if (!std.math.isFinite(confidence) or confidence < 0 or confidence > 1) return error.InvalidConfidence;
-        const entry = try self.ownedNode(kind, subject, predicate, object, context, result, confidence, timestamp);
+        return self.makeRecord(.{ .kind = kind, .subject = subject, .predicate = predicate, .object = object, .context = context, .result = result, .timestamp = timestamp, .confidence = confidence });
+    }
+
+    fn makeRecord(self: *Runtime, input: model.RecordInput) !u64 {
+        if (!std.math.isFinite(input.confidence) or input.confidence < 0 or input.confidence > 1) return error.InvalidConfidence;
+        if (input.subject.len == 0 or input.predicate.len == 0 or input.object.len == 0) return error.InvalidRecord;
+        const entry = try self.ownedNode(input.kind, input.subject, input.predicate, input.object, input.context, input.result, input.confidence, input.timestamp);
         const id = self.store.add(entry) catch |err| {
             store_mod.Store.deinitNode(self.allocator, entry);
             return err;
         };
+        self.store.addRecordData(id, input) catch |err| {
+            store_mod.Store.deinitNode(self.allocator, self.store.nodes.pop().?);
+            return err;
+        };
         self.backend.upsert(&self.store, id) catch |err| {
+            self.store.removeRecordData(id);
             store_mod.Store.deinitNode(self.allocator, self.store.nodes.pop().?);
             return err;
         };
         self.next_id += 1;
         return id;
     }
-    pub fn observe(self: *Runtime, subject: []const u8, predicate: []const u8, object: []const u8, context: []const u8, result: []const u8, timestamp: i64) !u64 {
-        self.clock = @max(self.clock, timestamp);
-        const id = try self.make(.experience, subject, predicate, object, context, result, 0.5, timestamp);
+
+    /// Writes a generic structured record. Domain adapters only normalize this
+    /// input; they never obtain direct Store mutation access.
+    pub fn record(self: *Runtime, input: model.RecordInput) !u64 {
+        var transaction = try self.beginTransaction();
+        defer transaction.deinit();
+        errdefer transaction.rollback() catch {};
+        self.clock = @max(self.clock, input.timestamp);
+        const id = try self.makeRecord(input);
+        if (input.kind != .experience) return id;
         self.pending_experiences += 1;
-        const key = fingerprint(subject, predicate, object, context, result);
+        const key = self.nodeFingerprint(self.store.constNode(id).?);
         const entry = try self.experience_groups.getOrPut(key);
         if (!entry.found_existing) entry.value_ptr.* = 0;
         entry.value_ptr.* += 1;
@@ -198,6 +215,10 @@ pub const Runtime = struct {
         try self.pending_groups.put(key, {});
         if (self.auto_consolidation_enabled) _ = try self.consolidatePendingAtomic(self.auto_consolidation_policy);
         return id;
+    }
+
+    pub fn observe(self: *Runtime, subject: []const u8, predicate: []const u8, object: []const u8, context: []const u8, result: []const u8, timestamp: i64) !u64 {
+        return self.record(.{ .subject = subject, .predicate = predicate, .object = object, .context = context, .result = result, .timestamp = timestamp });
     }
 
     /// Enable event-triggered consolidation for subsequent observations.
@@ -225,6 +246,7 @@ pub const Runtime = struct {
     /// its normalized weight. Source programs use this instead of Store directly.
     pub fn link(self: *Runtime, from: u64, kind: model.RelationKind, to: u64, weight: f64) !void {
         if (self.store.constNode(from) == null or self.store.constNode(to) == null) return error.UnknownNode;
+        if (from == to) return error.InvalidRelation;
         if (!std.math.isFinite(weight) or weight < 0 or weight > 1) return error.InvalidRelationWeight;
         try self.store.link(.{ .from = from, .to = to, .kind = kind, .weight = weight });
     }
@@ -395,8 +417,8 @@ pub const Runtime = struct {
                     break;
                 }
             }
-            for (self.store.consolidations.items) |record| {
-                if (record.source_a == proposal.source_a and record.source_b == proposal.source_b and std.mem.eql(u8, record.rule, consolidator.name())) {
+            for (self.store.consolidations.items) |consolidation| {
+                if (consolidation.source_a == proposal.source_a and consolidation.source_b == proposal.source_b and std.mem.eql(u8, consolidation.rule, consolidator.name())) {
                     already_committed = true;
                     break;
                 }
@@ -439,12 +461,35 @@ pub const Runtime = struct {
         return std.hash.Wyhash.hash(seed, result);
     }
 
-    fn nodeFingerprint(node: model.Node) u64 {
-        return fingerprint(node.subject, node.predicate, node.object, node.context, node.result);
+    fn nodeFingerprint(self: *const Runtime, node: *const model.Node) u64 {
+        var seed = fingerprint(node.subject, node.predicate, node.object, node.context, node.result);
+        for (self.store.scoped_records.items) |scope_record| if (scope_record.node == node.id) {
+            seed = std.hash.Wyhash.hash(seed, scope_record.scope.key);
+            seed = std.hash.Wyhash.hash(seed, scope_record.scope.value);
+        };
+        for (self.store.metric_records.items) |metric_record| if (metric_record.node == node.id) {
+            seed = std.hash.Wyhash.hash(seed, metric_record.metric.name);
+            seed = std.hash.Wyhash.hash(seed, metric_record.metric.unit);
+            seed = std.hash.Wyhash.hash(seed, @tagName(metric_record.metric.direction));
+            seed = std.hash.Wyhash.hash(seed, std.mem.asBytes(&metric_record.metric.value));
+            if (metric_record.metric.uncertainty) |uncertainty| seed = std.hash.Wyhash.hash(seed, std.mem.asBytes(&uncertainty));
+        };
+        for (self.store.artifact_records.items) |artifact_record| if (artifact_record.node == node.id) {
+            seed = std.hash.Wyhash.hash(seed, artifact_record.artifact.kind);
+            seed = std.hash.Wyhash.hash(seed, artifact_record.artifact.digest);
+            seed = std.hash.Wyhash.hash(seed, artifact_record.artifact.locator);
+        };
+        for (self.store.structure_records.items) |structure_record| if (structure_record.node == node.id) {
+            seed = std.hash.Wyhash.hash(seed, structure_record.structure.kind);
+            seed = std.hash.Wyhash.hash(seed, structure_record.structure.fingerprint);
+        };
+        return seed;
     }
 
     fn recordRule(self: *Runtime, artifact: u64, rule: []const u8, source_a: u64, source_b: u64) !void {
-        try self.store.recordConsolidation(.{ .artifact = artifact, .rule = try self.allocator.dupe(u8, rule), .version = 1, .source_a = source_a, .source_b = source_b });
+        const rule_copy = try self.allocator.dupe(u8, rule);
+        errdefer self.allocator.free(rule_copy);
+        try self.store.recordConsolidation(.{ .artifact = artifact, .rule = rule_copy, .version = 1, .source_a = source_a, .source_b = source_b });
     }
 
     fn beginConsolidation(self: *Runtime) !Transaction {
@@ -531,7 +576,7 @@ pub const Runtime = struct {
         var i: usize = 0;
         while (i < experiences.items.len) : (i += 1) {
             const left = self.store.constNode(experiences.items[i]).?;
-            const group_count = self.experience_groups.get(nodeFingerprint(left.*)) orelse 0;
+            const group_count = self.experience_groups.get(self.nodeFingerprint(left)) orelse 0;
             if (group_count < policy.repeat_threshold) continue;
             var repetitions: usize = 0;
             for (experiences.items[i..]) |candidate_id| {
@@ -713,8 +758,8 @@ pub const Runtime = struct {
     pub fn persistAtomic(self: *Runtime, io: std.Io, path: []const u8) !void {
         const next_revision = std.math.add(u64, self.revision, 1) catch return error.RevisionOverflow;
         try persistence.saveAtomic(&self.store, next_revision, self.next_id, self.clock, io, self.allocator, path);
-        try index_journal.save(&self.store, next_revision, io, self.allocator, path);
         self.revision = next_revision;
+        try index_journal.save(&self.store, next_revision, io, self.allocator, path);
         self.index_checkpoint_revision = next_revision;
     }
 
@@ -728,6 +773,7 @@ pub const Runtime = struct {
         try persistence.recoverJournal(io, allocator, path);
         const loaded = try persistence.load(allocator, io, path);
         var runtime = Runtime.init(allocator);
+        errdefer runtime.deinit();
         runtime.store = loaded.store;
         runtime.next_id = loaded.next_id;
         runtime.clock = loaded.clock;
@@ -738,7 +784,7 @@ pub const Runtime = struct {
         } else {
             for (runtime.store.nodes.items) |node| {
                 if (node.kind != .experience) continue;
-                const key = nodeFingerprint(node);
+                const key = runtime.nodeFingerprint(&node);
                 const entry = try runtime.experience_groups.getOrPut(key);
                 if (!entry.found_existing) entry.value_ptr.* = 0;
                 entry.value_ptr.* += 1;

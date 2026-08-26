@@ -111,7 +111,27 @@ pub fn main() !void {
 }
 ```
 
-### 2.3 核心 API
+### 2.3 通用结构化记录
+
+`record(RecordInput)` 在不引入领域实体的前提下写入可复现实验或工作流证据；`observe()` 仍适合仅含文本字段的轻量经验。范围按 `key` 字典序、指标按 `name`/`unit` 字典序、制品按摘要字典序提供，以获得稳定身份。
+
+```zig
+const scopes = [_]meml.Scope{ .{ .key = "code", .value = "v2" }, .{ .key = "environment", .value = "prod" } };
+const metrics = [_]meml.Metric{.{ .name = "quality", .value = 0.99, .unit = "ratio", .uncertainty = 0.01, .direction = .maximize }};
+const artifacts = [_]meml.Artifact{.{ .kind = "result", .digest = "0123456789abcdef" }};
+const id = try runtime.record(.{
+    .subject = "agent", .predicate = "selected", .object = "strategy",
+    .timestamp = 100, .scopes = &scopes, .metrics = &metrics, .artifacts = &artifacts,
+    .structure = .{ .kind = "workflow", .fingerprint = "fedcba9876543210" },
+});
+var acts = try runtime.activate(.{ .query = "strategy", .scopes = &scopes, .structure = .{ .kind = "workflow", .fingerprint = "fedcba9876543210" } }, 5, a);
+defer acts.deinit(a);
+_ = id;
+```
+
+`science.Generic.adapter()` 提供同一通用校验边界；`quantum.adapter()` 仅是可选的量子输入规范化示例。二者均不能直接写 `Store`。详见 [`docs/domain-memory.md`](docs/domain-memory.md)。
+
+### 2.4 核心 API
 
 `Runtime` 的公开方法（`src/runtime.zig`）：
 

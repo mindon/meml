@@ -111,7 +111,27 @@ pub fn main() !void {
 }
 ```
 
-### 2.3 Core API
+### 2.3 General Structured Records
+
+`record(RecordInput)` writes reproducible experiment or workflow evidence without adding domain entities to the kernel; `observe()` remains suitable for lightweight text-only experience. Supply scopes in `key` order, metrics in `name`/`unit` order, and artifacts in digest order for stable identity.
+
+```zig
+const scopes = [_]meml.Scope{ .{ .key = "code", .value = "v2" }, .{ .key = "environment", .value = "prod" } };
+const metrics = [_]meml.Metric{.{ .name = "quality", .value = 0.99, .unit = "ratio", .uncertainty = 0.01, .direction = .maximize }};
+const artifacts = [_]meml.Artifact{.{ .kind = "result", .digest = "0123456789abcdef" }};
+const id = try runtime.record(.{
+    .subject = "agent", .predicate = "selected", .object = "strategy",
+    .timestamp = 100, .scopes = &scopes, .metrics = &metrics, .artifacts = &artifacts,
+    .structure = .{ .kind = "workflow", .fingerprint = "fedcba9876543210" },
+});
+var acts = try runtime.activate(.{ .query = "strategy", .scopes = &scopes, .structure = .{ .kind = "workflow", .fingerprint = "fedcba9876543210" } }, 5, a);
+defer acts.deinit(a);
+_ = id;
+```
+
+`science.Generic.adapter()` provides the same general validation boundary; `quantum.adapter()` is only an optional quantum input-normalization example. Neither may mutate `Store` directly. See [`docs/domain-memory.md`](docs/domain-memory.md).
+
+### 2.4 Core API
 
 Public methods on `Runtime` (`src/runtime.zig`):
 

@@ -21,7 +21,7 @@ Semantics and ranking are controlled by a single kernel; indexes, external signa
 - **Stable kernel boundary**: providers only produce candidate IDs; the kernel owns identity, scoring, ordering, limits, conflict handling, and explanations.
 - **Semantic graph and lifecycle**: supports `experience`, `evidence`, `claim`, `memory`, `belief`, `concept`, and `procedure` nodes, plus support, contradiction, derivation, generalization, and step relations. Beliefs can be active, contested, superseded, or archived.
 - **Controlled consolidation**: consolidate explicitly in full or incrementally, or enable event-triggered consolidation for later observations; policies control memory, belief, concept, procedure, and neural rules independently.
-- **Recoverable state**: `MEML12` saves the graph, derivation provenance, fingerprint indexes, belief lifecycle, deterministic `NeuralState`, versioned signal calibration parameters, and verified feedback receipts. Semantic revisions are bound to index checkpoint journals; recovery only accepts a matching derived-index manifest and rebuilds the indexes.
+- **Recoverable state**: the only supported `MEML13` format saves the graph, structured scopes/metrics/artifacts/structure identity, derivation provenance, belief lifecycle, deterministic `NeuralState`, versioned signal calibration parameters, and verified feedback receipts. Old formats are explicitly rejected; recovery rebuilds derived indexes from the semantic revision.
 - **Reproducible verification**: built-in end-to-end, conflict, persistence, rollback, recovery, provider-consistency, and scale-path tests; the benchmark program uses deterministic datasets and reports retrieval-quality metrics.
 
 ## Current Architecture
@@ -46,7 +46,7 @@ Runtime ────────> indexed symbolic backend (default)
 
 ## Verified Capabilities
 
-- Write experiences with `observe()` and activate relevant memory by query, goal, context, and preference.
+- Write lightweight experiences with `observe()`, or scopes, metrics, artifacts, and structure with `record(RecordInput)`; activate relevant memory by query, goal, context, structured scope, and fingerprint.
 - Use indexed, vector, and graph candidate providers; rebuild derived indexes from persisted semantic records after recovery.
 - Add metadata, embedding, neural, and versioned calibration retrieval signal providers without changing the kernel scoring contract.
 - Derive memory, belief, concept, procedure, and deterministic neural artifacts from repeated experience; derivation records carry rules and sources.
@@ -59,7 +59,7 @@ Runtime ────────> indexed symbolic backend (default)
 - Recover interrupted local atomic writes using a journal and a monotonic revision, and reject stale writers through the local `VersionedProvider` CAS.
 - Persist, recover, and retrieve the deterministic `NeuralState`, and versioned weights and biases for `calibrated` providers; these are transparent reference states, not trained model parameters.
 
-See [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md) for behavior notes on consolidation, persistence, and boundary conditions.
+See [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md) for behavior notes on consolidation, persistence, and boundary conditions. [`docs/domain-memory.md`](docs/domain-memory.md) describes the shared structured model, adapter boundary, and JSON-lines examples for quantum, AI for Science, and ordinary agents.
 
 ## Quick Start
 

@@ -17,11 +17,12 @@ MEML 是一个面向 Agent 的可编程记忆运行时。它将经验、证据�
 
 ## 核心优势
 
-- **可解释检索**：每项激活都携带语义、词法、时间、图关系、过程、偏好、目标、置信度和冲突等信号分解。
-- **稳定的内核边界**：provider 仅产生候选 ID；内核负责身份、评分、顺序、数量限制、矛盾处理和解释。
+- **可解释检索**：每项激活都携带语义、词法、时间、图关系、过程、偏好、目标、置信度、作用域、指标、结构、谱系和冲突等信号分解。
+- **通用结构化证据**：记录可携带版本化范围、带单位和不确定性的指标、内容寻址制品与结构指纹；`derived_from` 统一表达可追溯谱系。
+- **稳定的内核边界**：provider 仅产生候选 ID；领域 adapter 仅规范化输入与信号；内核负责身份、评分、顺序、数量限制、矛盾处理和解释。
 - **语义图与生命周期**：支持 `experience`、`evidence`、`claim`、`memory`、`belief`、`concept`、`procedure` 节点，以及支持、矛盾、派生、泛化和步骤关系。信念可处于 active、contested、superseded 或 archived 状态。
 - **可控整合**：可显式全量或增量整合，也可为后续观察开启事件触发整合；策略可分别控制 memory、belief、concept、procedure 和 neural 规则。
-- **可恢复状态**：`MEML12` 保存图、推导来源、指纹索引、信念生命周期、确定性 `NeuralState`、版本化 signal 校准参数和已验证反馈回执。语义 revision 与索引 checkpoint journal 绑定；恢复时只接受匹配的派生索引清单并重建索引。
+- **可恢复状态**：唯一支持的 `MEML13` 保存图、结构化范围/指标/制品/结构身份、推导来源、信念生命周期、确定性 `NeuralState`、版本化 signal 校准参数和已验证反馈回执。旧格式明确拒绝；语义 revision 与索引 checkpoint journal 绑定，恢复时重建派生索引。
 - **可复现验证**：内置端到端、冲突、持久化、回滚、恢复、provider 一致性和规模路径测试；基准程序使用确定性数据集并输出检索质量指标。
 
 ## 当前架构
@@ -46,7 +47,7 @@ Runtime ────────> indexed symbolic backend (default)
 
 ## 已验证能力
 
-- 使用 `observe()` 写入经验，并以查询、目标、情境和偏好激活相关记忆。
+- 使用 `observe()` 写入轻量经验，或以 `record(RecordInput)` 写入范围、指标、制品和结构；按查询、目标、情境、结构化范围与指纹激活相关记忆。
 - 使用索引、向量和图候选 provider；恢复后从持久化语义记录重建派生索引。
 - 添加元数据、嵌入、神经及版本化校准检索信号 provider，而不改变内核评分合约。
 - 从重复经验派生 memory、belief、concept、procedure 和确定性 neural artifact；推导记录携带规则与来源。
@@ -59,7 +60,7 @@ Runtime ────────> indexed symbolic backend (default)
 - 使用 journal 与单调 revision 恢复中断的本地原子写入，并通过本地 `VersionedProvider` CAS 拒绝陈旧写者竞争。
 - 持久化、恢复并用于检索的确定性 `NeuralState`，以及 `calibrated` provider 的版本化权重与偏置；它们是透明参考状态，不是训练模型参数。
 
-有关整合、持久化和边界条件的行为说明见 [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md)。
+有关整合、持久化和边界条件的行为说明见 [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md)。量子、AI for Science 和普通 Agent 共用的结构化模型、adapter 边界与 JSON-lines 示例见 [`docs/domain-memory.md`](docs/domain-memory.md)。
 
 ## 快速使用
 

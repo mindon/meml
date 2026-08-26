@@ -71,13 +71,19 @@ fn scaled(value: ?[]const u8) !f64 {
     return @as(f64, @floatFromInt(try integer(i64, value))) / 1_000_000;
 }
 
+fn optionalScaled(value: ?[]const u8) !?f64 {
+    const raw = value orelse return error.BadFile;
+    if (std.mem.eql(u8, raw, "-")) return null;
+    return try scaled(raw);
+}
+
 pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i64, io: std.Io, path: []const u8) !void {
     try store.validate();
     var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
     defer file.close(io);
     var buffer: [4096]u8 = undefined;
     var writer = file.writer(io, &buffer);
-    try writer.interface.print("MEML12 {d} {d} {d}\n", .{ revision, next_id, clock });
+    try writer.interface.print("MEML13 {d} {d} {d}\n", .{ revision, next_id, clock });
     for (store.nodes.items) |node| {
         const subject = try encode(store.allocator, node.subject);
         defer store.allocator.free(subject);
@@ -90,6 +96,40 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         const result = try encode(store.allocator, node.result);
         defer store.allocator.free(result);
         try writer.interface.print("N|{d}|{s}|{s}|{s}|{s}|{s}|{s}|{d}|{d}|{d}|{s}|{d}|{d}|{d}|{d}\n", .{ node.id, @tagName(node.kind), subject, predicate, object, context, result, node.timestamp, @as(i64, @intFromFloat(node.confidence * 1_000_000)), @as(i64, @intFromFloat(node.strength * 1_000_000)), @tagName(node.belief_state), node.support_count, node.contradiction_count, node.last_confirmed_at, node.last_contradicted_at });
+    }
+    for (store.scoped_records.items) |record| {
+        const key = try encode(store.allocator, record.scope.key);
+        defer store.allocator.free(key);
+        const value = try encode(store.allocator, record.scope.value);
+        defer store.allocator.free(value);
+        try writer.interface.print("S|{d}|{s}|{s}\n", .{ record.node, key, value });
+    }
+    for (store.metric_records.items) |record| {
+        const name = try encode(store.allocator, record.metric.name);
+        defer store.allocator.free(name);
+        const unit = try encode(store.allocator, record.metric.unit);
+        defer store.allocator.free(unit);
+        if (record.metric.uncertainty) |uncertainty| {
+            try writer.interface.print("T|{d}|{s}|{d}|{s}|{d}|{s}\n", .{ record.node, name, @as(i64, @intFromFloat(record.metric.value * 1_000_000)), unit, @as(i64, @intFromFloat(uncertainty * 1_000_000)), @tagName(record.metric.direction) });
+        } else {
+            try writer.interface.print("T|{d}|{s}|{d}|{s}|-|{s}\n", .{ record.node, name, @as(i64, @intFromFloat(record.metric.value * 1_000_000)), unit, @tagName(record.metric.direction) });
+        }
+    }
+    for (store.artifact_records.items) |record| {
+        const kind = try encode(store.allocator, record.artifact.kind);
+        defer store.allocator.free(kind);
+        const digest = try encode(store.allocator, record.artifact.digest);
+        defer store.allocator.free(digest);
+        const locator = try encode(store.allocator, record.artifact.locator);
+        defer store.allocator.free(locator);
+        try writer.interface.print("A|{d}|{s}|{s}|{s}\n", .{ record.node, kind, digest, locator });
+    }
+    for (store.structure_records.items) |record| {
+        const kind = try encode(store.allocator, record.structure.kind);
+        defer store.allocator.free(kind);
+        const fingerprint = try encode(store.allocator, record.structure.fingerprint);
+        defer store.allocator.free(fingerprint);
+        try writer.interface.print("H|{d}|{s}|{s}\n", .{ record.node, kind, fingerprint });
     }
     for (store.relations.items) |relation| try writer.interface.print("R|{d}|{d}|{s}|{d}\n", .{ relation.from, relation.to, @tagName(relation.kind), @as(i64, @intFromFloat(relation.weight * 1_000_000)) });
     for (store.consolidations.items) |record| {
@@ -135,7 +175,6 @@ pub fn saveAtomic(store: *const store_mod.Store, revision: u64, next_id: u64, cl
     var lock = try acquireWriterLock(io, allocator, path);
     defer {
         lock.file.close(io);
-        std.Io.Dir.cwd().deleteFile(io, lock.name) catch {};
         allocator.free(lock.name);
     }
     try saveAtomicLocked(store, revision, next_id, clock, io, allocator, path);
@@ -147,7 +186,6 @@ pub fn saveAtomicIfRevision(store: *const store_mod.Store, expected_revision: u6
     var lock = try acquireWriterLock(io, allocator, path);
     defer {
         lock.file.close(io);
-        std.Io.Dir.cwd().deleteFile(io, lock.name) catch {};
         allocator.free(lock.name);
     }
     var current = load(allocator, io, path) catch |err| switch (err) {
@@ -167,7 +205,6 @@ pub fn recoverJournal(io: std.Io, allocator: std.mem.Allocator, path: []const u8
     var lock = try acquireWriterLock(io, allocator, path);
     defer {
         lock.file.close(io);
-        std.Io.Dir.cwd().deleteFile(io, lock.name) catch {};
         allocator.free(lock.name);
     }
     const journal = try journalName(allocator, path);
@@ -206,7 +243,7 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
     var lines = std.mem.splitScalar(u8, data, '\n');
     const header = lines.next() orelse return error.BadFile;
     var header_fields = std.mem.splitScalar(u8, header, ' ');
-    if (!std.mem.eql(u8, header_fields.next() orelse return error.BadFile, "MEML12")) return error.UnsupportedVersion;
+    if (!std.mem.eql(u8, header_fields.next() orelse return error.BadFile, "MEML13")) return error.UnsupportedVersion;
     loaded.revision = try integer(u64, header_fields.next());
     loaded.next_id = try integer(u64, header_fields.next());
     loaded.clock = try integer(i64, header_fields.next());
@@ -249,6 +286,43 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
             };
             try finish(&fields);
             _ = try loaded.store.add(node);
+        } else if (std.mem.eql(u8, tag, "S")) {
+            const node = try integer(u64, fields.next());
+            const key = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(key);
+            const value = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(value);
+            try finish(&fields);
+            try loaded.store.addScope(node, .{ .key = key, .value = value });
+        } else if (std.mem.eql(u8, tag, "T")) {
+            const node = try integer(u64, fields.next());
+            const name = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(name);
+            const value = try scaled(fields.next());
+            const unit = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(unit);
+            const uncertainty = try optionalScaled(fields.next());
+            const direction = try enumValue(model.MetricDirection, fields.next());
+            try finish(&fields);
+            try loaded.store.addMetric(node, .{ .name = name, .value = value, .unit = unit, .uncertainty = uncertainty, .direction = direction });
+        } else if (std.mem.eql(u8, tag, "A")) {
+            const node = try integer(u64, fields.next());
+            const kind = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(kind);
+            const digest = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(digest);
+            const locator = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(locator);
+            try finish(&fields);
+            try loaded.store.addArtifact(node, .{ .kind = kind, .digest = digest, .locator = locator });
+        } else if (std.mem.eql(u8, tag, "H")) {
+            const node = try integer(u64, fields.next());
+            const kind = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(kind);
+            const fingerprint = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(fingerprint);
+            try finish(&fields);
+            try loaded.store.setStructure(node, .{ .kind = kind, .fingerprint = fingerprint });
         } else if (std.mem.eql(u8, tag, "R")) {
             try loaded.store.link(.{ .from = try integer(u64, fields.next()), .to = try integer(u64, fields.next()), .kind = try enumValue(model.RelationKind, fields.next()), .weight = try scaled(fields.next()) });
             try finish(&fields);

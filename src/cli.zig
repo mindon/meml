@@ -90,6 +90,102 @@ fn fArray(o: ObjectMap, key: []const u8) ?Array {
     };
 }
 
+fn fObject(o: ObjectMap, key: []const u8) ?ObjectMap {
+    const v = o.get(key) orelse return null;
+    return switch (v) {
+        .object => |map| map,
+        else => null,
+    };
+}
+
+fn requiredF64(o: ObjectMap, key: []const u8) !f64 {
+    const value = o.get(key) orelse return error.MissingMetricValue;
+    return switch (value) {
+        .float => |number| number,
+        .integer => |number| @floatFromInt(number),
+        else => error.InvalidMetricValue,
+    };
+}
+
+fn recordInputFromJson(a: Allocator, o: ObjectMap) !meml.RecordInput {
+    var scopes = std.ArrayList(meml.Scope).empty;
+    defer scopes.deinit(a);
+    if (fArray(o, "scopes")) |items| {
+        if (items.items.len > 16) return error.MetadataLimitExceeded;
+        for (items.items) |item| {
+            const scope = switch (item) {
+                .object => |value| value,
+                else => return error.InvalidScope,
+            };
+            try scopes.append(a, .{ .key = fStr(scope, "key") orelse return error.InvalidScope, .value = fStr(scope, "value") orelse return error.InvalidScope });
+        }
+    }
+    var metrics = std.ArrayList(meml.Metric).empty;
+    defer metrics.deinit(a);
+    if (fArray(o, "metrics")) |items| {
+        if (items.items.len > 32) return error.MetadataLimitExceeded;
+        for (items.items) |item| {
+            const metric = switch (item) {
+                .object => |value| value,
+                else => return error.InvalidMetric,
+            };
+            const direction = std.meta.stringToEnum(meml.MetricDirection, fOptStr(metric, "direction")) orelse if (fOptStr(metric, "direction").len == 0) meml.MetricDirection.neutral else return error.InvalidMetric;
+            const uncertainty: ?f64 = if (metric.get("uncertainty")) |value| switch (value) {
+                .float => |number| number,
+                .integer => |number| @floatFromInt(number),
+                else => return error.InvalidMetric,
+            } else null;
+            try metrics.append(a, .{ .name = fStr(metric, "name") orelse return error.InvalidMetric, .value = try requiredF64(metric, "value"), .unit = fOptStr(metric, "unit"), .uncertainty = uncertainty, .direction = direction });
+        }
+    }
+    var artifacts = std.ArrayList(meml.Artifact).empty;
+    defer artifacts.deinit(a);
+    if (fArray(o, "artifacts")) |items| {
+        if (items.items.len > 16) return error.MetadataLimitExceeded;
+        for (items.items) |item| {
+            const artifact = switch (item) {
+                .object => |value| value,
+                else => return error.InvalidArtifact,
+            };
+            try artifacts.append(a, .{ .kind = fStr(artifact, "kind") orelse return error.InvalidArtifact, .digest = fStr(artifact, "digest") orelse return error.InvalidArtifact, .locator = fOptStr(artifact, "locator") });
+        }
+    }
+    const structure: ?meml.Structure = if (fObject(o, "structure")) |value| .{ .kind = fStr(value, "kind") orelse return error.InvalidStructure, .fingerprint = fStr(value, "fingerprint") orelse return error.InvalidStructure } else null;
+    const input = meml.RecordInput{
+        .subject = fOptStr(o, "subject"),
+        .predicate = fOptStr(o, "predicate"),
+        .object = fOptStr(o, "object"),
+        .context = fOptStr(o, "context"),
+        .result = fOptStr(o, "result"),
+        .timestamp = fInt(o, "timestamp", 0),
+        .confidence = fF64(o, "confidence", 0.5),
+        .scopes = try scopes.toOwnedSlice(a),
+        .metrics = try metrics.toOwnedSlice(a),
+        .artifacts = try artifacts.toOwnedSlice(a),
+        .structure = structure,
+    };
+    return input;
+}
+
+fn contextScopesFromJson(a: Allocator, o: ObjectMap) ![]const meml.Scope {
+    const items = fArray(o, "scopes") orelse return &.{};
+    if (items.items.len > 16) return error.MetadataLimitExceeded;
+    const scopes = try a.alloc(meml.Scope, items.items.len);
+    for (items.items, 0..) |item, index| {
+        const scope = switch (item) {
+            .object => |value| value,
+            else => return error.InvalidScope,
+        };
+        scopes[index] = .{ .key = fStr(scope, "key") orelse return error.InvalidScope, .value = fStr(scope, "value") orelse return error.InvalidScope };
+    }
+    return scopes;
+}
+
+fn contextStructureFromJson(o: ObjectMap) !?meml.Structure {
+    const value = fObject(o, "structure") orelse return null;
+    return .{ .kind = fStr(value, "kind") orelse return error.InvalidStructure, .fingerprint = fStr(value, "fingerprint") orelse return error.InvalidStructure };
+}
+
 // ---------------------------------------------------------------------------
 // Output helpers.
 // ---------------------------------------------------------------------------
@@ -160,6 +256,10 @@ fn encodeActivation(a: Allocator, runtime: *const meml.Runtime, act: meml.Activa
     try sig.put(a, "preference", .{ .float = act.signals.preference });
     try sig.put(a, "goal", .{ .float = act.signals.goal });
     try sig.put(a, "confidence", .{ .float = act.signals.confidence });
+    try sig.put(a, "scope", .{ .float = act.signals.scope });
+    try sig.put(a, "metric", .{ .float = act.signals.metric });
+    try sig.put(a, "structure", .{ .float = act.signals.structure });
+    try sig.put(a, "lineage", .{ .float = act.signals.lineage });
     try sig.put(a, "contradiction", .{ .float = act.signals.contradiction });
     try sig.put(a, "external", .{ .float = act.signals.external });
     try map.put(a, "signals", .{ .object = sig });
@@ -180,14 +280,7 @@ fn encodeActivation(a: Allocator, runtime: *const meml.Runtime, act: meml.Activa
 }
 
 fn cmdObserve(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
-    const id = try state.runtime.observe(
-        fOptStr(o, "subject"),
-        fOptStr(o, "predicate"),
-        fOptStr(o, "object"),
-        fOptStr(o, "context"),
-        fOptStr(o, "result"),
-        fInt(o, "timestamp", 0),
-    );
+    const id = try state.runtime.record(try recordInputFromJson(a, o));
     var resp = ObjectMap.empty;
     try resp.put(a, "ok", .{ .bool = true });
     try resp.put(a, "id", .{ .integer = @intCast(id) });
@@ -283,6 +376,8 @@ fn cmdActivate(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer
         .situation = fOptStr(o, "situation"),
         .now = fInt(o, "now", 0),
         .preferred = fOptStr(o, "preferred"),
+        .scopes = try contextScopesFromJson(a, o),
+        .structure = try contextStructureFromJson(o),
         .resolve_conflicts = fBool(o, "resolve_conflicts", true),
     };
     const limit: usize = @intCast(fU64(o, "limit", 10));
@@ -590,10 +685,22 @@ fn processLine(state: *State, line: []const u8, writer: *std.Io.Writer) !void {
     };
 }
 
-fn processAll(state: *State, input: []const u8, writer: *std.Io.Writer) !void {
-    var lines = std.mem.splitScalar(u8, input, '\n');
-    while (lines.next()) |line| {
+fn processReader(state: *State, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
+    while (true) {
+        const line = reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
+            error.StreamTooLong => {
+                _ = reader.discardDelimiterInclusive('\n') catch |discard_err| switch (discard_err) {
+                    error.EndOfStream => break,
+                    error.ReadFailed => |cause| return cause,
+                };
+                try writer.writeAll("{\"ok\":false,\"error\":\"request too large\"}\n");
+                continue;
+            },
+            error.EndOfStream => break,
+            error.ReadFailed => |cause| return cause,
+        };
         try processLine(state, line, writer);
+        reader.toss(@min(1, reader.bufferedLen()));
     }
 }
 
@@ -639,17 +746,18 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             try out_writer.writeAll(help_text);
         } else if (std.mem.eql(u8, arg, "--file")) {
             const path = args.next() orelse return error.MissingFile;
-            const input = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(64 << 20));
-            defer allocator.free(input);
-            try processAll(&state, input, out_writer);
+            var input_file = try std.Io.Dir.cwd().openFile(io, path, .{});
+            defer input_file.close(io);
+            var input_buffer: [64 * 1024]u8 = undefined;
+            var reader = input_file.reader(io, &input_buffer);
+            try processReader(&state, &reader.interface, out_writer);
         } else {
             try processLine(&state, arg, out_writer);
         }
     } else {
         var stdin = std.Io.File.stdin();
-        var reader = stdin.reader(io, &.{});
-        const input = try reader.interface.allocRemaining(allocator, std.Io.Limit.limited(64 << 20));
-        defer allocator.free(input);
-        try processAll(&state, input, out_writer);
+        var input_buffer: [64 * 1024]u8 = undefined;
+        var reader = stdin.reader(io, &input_buffer);
+        try processReader(&state, &reader.interface, out_writer);
     }
 }

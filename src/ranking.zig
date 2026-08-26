@@ -24,6 +24,48 @@ fn semantic(node: model.Node, context: model.Context) f64 {
     return @min(1, score);
 }
 
+fn scopeScore(store: *const store_mod.Store, id: u64, requested: []const model.Scope) f64 {
+    if (requested.len == 0) return 0;
+    var matches: usize = 0;
+    for (requested) |scope| {
+        var found = false;
+        for (store.scoped_records.items) |record| {
+            if (record.node == id and std.mem.eql(u8, record.scope.key, scope.key)) {
+                if (!std.mem.eql(u8, record.scope.value, scope.value)) return 0;
+                found = true;
+                break;
+            }
+        }
+        if (found) matches += 1;
+    }
+    return @as(f64, @floatFromInt(matches)) / @as(f64, @floatFromInt(requested.len));
+}
+
+fn metricQuality(store: *const store_mod.Store, id: u64) f64 {
+    var count: usize = 0;
+    var uncertainty_penalty: f64 = 0;
+    for (store.metric_records.items) |record| if (record.node == id) {
+        count += 1;
+        if (record.metric.uncertainty) |uncertainty| uncertainty_penalty += @min(0.5, uncertainty / (@abs(record.metric.value) + 0.000001));
+    };
+    if (count == 0) return 0;
+    return @max(0, @min(1, 0.5 + @min(0.4, @as(f64, @floatFromInt(count)) * 0.1) - uncertainty_penalty / @as(f64, @floatFromInt(count))));
+}
+
+fn structureScore(store: *const store_mod.Store, id: u64, requested: ?model.Structure) f64 {
+    const expected = requested orelse return 0;
+    for (store.structure_records.items) |record| if (record.node == id and std.mem.eql(u8, record.structure.kind, expected.kind) and std.mem.eql(u8, record.structure.fingerprint, expected.fingerprint)) return 1;
+    return 0;
+}
+
+fn lineageScore(store: *const store_mod.Store, id: u64) f64 {
+    var count: usize = 0;
+    for (store.relations.items) |relation| {
+        if (relation.from == id and relation.kind == .derived_from) count += 1;
+    }
+    return @min(1, @as(f64, @floatFromInt(count)) * 0.25);
+}
+
 fn graphScore(store: *const store_mod.Store, id: u64, context: model.Context) f64 {
     for (store.relations.items) |relation| {
         if (relation.from != id and relation.to != id) continue;
@@ -65,6 +107,10 @@ pub fn signals(store: *const store_mod.Store, node: model.Node, context: model.C
         .preference = if (context.preferred.len > 0 and has(node.object, context.preferred)) 1 else 0,
         .goal = if (context.goal.len > 0 and (has(node.object, context.goal) or has(node.context, context.goal) or has(node.predicate, context.goal))) 1 else 0,
         .confidence = node.confidence * node.strength,
+        .scope = scopeScore(store, node.id, context.scopes),
+        .metric = metricQuality(store, node.id),
+        .structure = structureScore(store, node.id, context.structure),
+        .lineage = lineageScore(store, node.id),
         .contradiction = contradictionScore(store, node.id, context),
     };
     if (node.belief_state == .contested and context.resolve_conflicts) output.confidence *= 0.6;
@@ -72,5 +118,6 @@ pub fn signals(store: *const store_mod.Store, node: model.Node, context: model.C
 }
 
 pub fn sortActivations(_: void, left: model.Activation, right: model.Activation) bool {
+    if (left.score == right.score) return left.id < right.id;
     return left.score > right.score;
 }

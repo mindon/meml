@@ -67,11 +67,24 @@ const Indexes = struct {
         for (entry.value_ptr.items) |old| if (old == id) return;
         try entry.value_ptr.append(self.allocator, id);
     }
-    fn indexNode(self: *Indexes, node: model.Node) !void {
+    fn indexNode(self: *Indexes, store: *const store_mod.Store, node: model.Node) !void {
         var buffer: [2048]u8 = undefined;
         const text = std.fmt.bufPrint(&buffer, "{s} {s} {s} {s} {s}", .{ node.subject, node.predicate, node.object, node.context, node.result }) catch "";
         var it = std.mem.tokenizeAny(u8, text, token_delimiters);
         while (it.next()) |token| try self.addToken(token, node.id);
+        for (store.scoped_records.items) |record| if (record.node == node.id) {
+            try self.addToken(record.scope.key, node.id);
+            try self.addToken(record.scope.value, node.id);
+        };
+        for (store.metric_records.items) |record| if (record.node == node.id) try self.addToken(record.metric.name, node.id);
+        for (store.artifact_records.items) |record| if (record.node == node.id) {
+            try self.addToken(record.artifact.kind, node.id);
+            try self.addToken(record.artifact.digest, node.id);
+        };
+        for (store.structure_records.items) |record| if (record.node == node.id) {
+            try self.addToken(record.structure.kind, node.id);
+            try self.addToken(record.structure.fingerprint, node.id);
+        };
         self.vectors.put(node.id, vector(node, "")) catch return error.OutOfMemory;
     }
     fn reset(self: *Indexes, store: *const store_mod.Store) !void {
@@ -82,7 +95,7 @@ const Indexes = struct {
         }
         self.tokens.clearRetainingCapacity();
         self.vectors.clearRetainingCapacity();
-        for (store.nodes.items) |node| try self.indexNode(node);
+        for (store.nodes.items) |node| try self.indexNode(store, node);
     }
 };
 fn hashToken(token: []const u8) u64 {
@@ -134,6 +147,16 @@ fn indexedCandidates(ctx: *anyopaque, store: *const store_mod.Store, context: mo
             try appendTokenMatches(indexes, token, &seen, &ids, allocator);
         }
     }
+    for (context.scopes) |scope| {
+        has_token = true;
+        try appendTokenMatches(indexes, scope.key, &seen, &ids, allocator);
+        try appendTokenMatches(indexes, scope.value, &seen, &ids, allocator);
+    }
+    if (context.structure) |structure| {
+        has_token = true;
+        try appendTokenMatches(indexes, structure.kind, &seen, &ids, allocator);
+        try appendTokenMatches(indexes, structure.fingerprint, &seen, &ids, allocator);
+    }
     if (!has_token) return all(ctx, store, context, allocator);
     return ids;
 }
@@ -177,7 +200,7 @@ fn reset(ctx: *anyopaque, store: *const store_mod.Store) !void {
 fn upsert(ctx: *anyopaque, store: *const store_mod.Store, id: u64) !void {
     const index: *Indexes = @ptrCast(@alignCast(ctx));
     const node = store.constNode(id) orelse return error.UnknownNode;
-    return index.indexNode(node.*);
+    return index.indexNode(store, node.*);
 }
 fn remove(ctx: *anyopaque, id: u64) void {
     const index: *Indexes = @ptrCast(@alignCast(ctx));

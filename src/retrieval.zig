@@ -32,7 +32,11 @@ pub fn runWithPipeline(store: *const store_mod.Store, backend: backend_mod.Backe
 
     var output = std.ArrayList(model.Activation).empty;
     errdefer output.deinit(allocator);
+    var seen = std.AutoHashMap(u64, void).init(allocator);
+    defer seen.deinit();
     for (ids.items) |id| {
+        const seen_entry = try seen.getOrPut(id);
+        if (seen_entry.found_existing) continue;
         const node = store.constNode(id) orelse continue;
         if (node.kind == .belief and (node.belief_state == .archived or node.belief_state == .superseded)) continue;
         var scored_signals = ranking.signals(store, node.*, context);

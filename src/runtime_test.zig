@@ -634,10 +634,10 @@ test "strict persistence rejects malformed and dangling state" {
     const path = testPath("test-invalid-state.state");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     const cases = [_][]const u8{
-        "MEML12 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0|0|extra\n",
-        "MEML12 0 2 0\nR|1|2|supports|1000000\n",
-        "MEML12 0 2 0\nL|1|1|500000|1\n",
-        "MEML12 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0\n",
+        "MEML13 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0|0|extra\n",
+        "MEML13 0 2 0\nR|1|2|supports|1000000\n",
+        "MEML13 0 2 0\nL|1|1|500000|1\n",
+        "MEML13 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0\n",
     };
     for (cases) |input| {
         var file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
@@ -1072,4 +1072,60 @@ test "documented MEML examples parse and execute" {
         defer report.deinit(std.testing.allocator);
         try std.testing.expect(runtime.store.nodes.items.len > 0);
     }
+}
+
+test "structured records isolate scope and survive MEML13 recovery" {
+    const path = testPath("test-structured-meml13.state");
+    const journal = testPath("test-structured-meml13.state.journal");
+    const index_journal = testPath("test-structured-meml13.state.index.journal");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, journal) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, index_journal) catch {};
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+
+    const current_scopes = [_]meml.Scope{ .{ .key = "backend", .value = "alpha" }, .{ .key = "code", .value = "v2" } };
+    const stale_scopes = [_]meml.Scope{ .{ .key = "backend", .value = "beta" }, .{ .key = "code", .value = "v1" } };
+    const metrics = [_]meml.Metric{.{ .name = "quality", .value = 0.99, .unit = "ratio", .uncertainty = 0.01, .direction = .maximize }};
+    const artifacts = [_]meml.Artifact{.{ .kind = "output", .digest = "0123456789abcdef" }};
+    const current = try runtime.record(.{ .subject = "agent", .predicate = "uses", .object = "strategy", .context = "run", .result = "success", .timestamp = 10, .confidence = 0.8, .scopes = &current_scopes, .metrics = &metrics, .artifacts = &artifacts, .structure = .{ .kind = "workflow", .fingerprint = "fedcba9876543210" } });
+    _ = try runtime.record(.{ .subject = "agent", .predicate = "uses", .object = "strategy", .context = "run", .result = "success", .timestamp = 10, .confidence = 0.8, .scopes = &stale_scopes });
+
+    var activated = try runtime.activate(.{ .query = "strategy", .scopes = &current_scopes, .structure = .{ .kind = "workflow", .fingerprint = "fedcba9876543210" }, .now = 10 }, 2, std.testing.allocator);
+    defer activated.deinit(std.testing.allocator);
+    try std.testing.expectEqual(current, activated.items[0].id);
+    try std.testing.expect(activated.items[0].signals.scope > 0.9);
+    try std.testing.expect(activated.items[0].signals.metric > 0);
+    try std.testing.expectEqual(@as(usize, 1), runtime.store.artifact_records.items.len);
+
+    try runtime.persist(std.testing.io, path);
+    var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer recovered.deinit();
+    try std.testing.expectEqual(@as(usize, 4), recovered.store.scoped_records.items.len);
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.metric_records.items.len);
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.artifact_records.items.len);
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.structure_records.items.len);
+}
+
+test "structured evaluation enforces explainable feasibility" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const scopes = [_]meml.Scope{.{ .key = "environment", .value = "current" }};
+    const metrics = [_]meml.Metric{.{ .name = "quality", .value = 1, .direction = .maximize }};
+    const expected = try runtime.record(.{ .subject = "agent", .predicate = "selects", .object = "method", .timestamp = 1, .scopes = &scopes, .metrics = &metrics, .structure = .{ .kind = "workflow", .fingerprint = "0123456789abcdef" } });
+    const cases = [_]meml.StructuredCase{.{ .task_id = "structured-selection", .context = .{ .query = "method", .scopes = &scopes, .structure = .{ .kind = "workflow", .fingerprint = "0123456789abcdef" } }, .expected = expected, .min_scope = 1, .min_metric = 0.5, .min_structure = 1 }};
+    const report = try meml.evaluation.evaluateStructured(&runtime, &cases, 1, std.testing.allocator);
+    try std.testing.expect((meml.StructuredQualityGate{ .min_recall = 1, .min_feasibility = 1 }).accepts(report));
+}
+
+test "MEML13 loader rejects old state headers without compatibility" {
+    const path = testPath("test-unsupported-version.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    var file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
+    defer file.close(std.testing.io);
+    var buffer: [128]u8 = undefined;
+    var writer = file.writer(std.testing.io, &buffer);
+    try writer.interface.writeAll("MEML12 0 1 0\n");
+    try writer.interface.flush();
+    try std.testing.expectError(error.UnsupportedVersion, meml.persistence.load(std.testing.allocator, std.testing.io, path));
 }

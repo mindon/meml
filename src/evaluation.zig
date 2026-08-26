@@ -53,6 +53,60 @@ pub const AnnotationReport = struct {
     }
 };
 
+/// A domain-neutral feasibility case. The thresholds assert that retrieved
+/// records carry compatible scope, measured quality, and optional structure.
+pub const StructuredCase = struct {
+    task_id: []const u8,
+    context: model.Context,
+    expected: u64,
+    min_scope: f64 = 0,
+    min_metric: f64 = 0,
+    min_structure: f64 = 0,
+};
+
+pub const StructuredReport = struct {
+    cases: usize = 0,
+    relevant: usize = 0,
+    feasible: usize = 0,
+    scope_total: f64 = 0,
+    metric_total: f64 = 0,
+    structure_total: f64 = 0,
+
+    pub fn feasibility(self: StructuredReport) f64 {
+        return if (self.cases == 0) 0 else @as(f64, @floatFromInt(self.feasible)) / @as(f64, @floatFromInt(self.cases));
+    }
+};
+
+pub const StructuredQualityGate = struct {
+    min_cases: usize = 1,
+    min_recall: f64 = 0,
+    min_feasibility: f64 = 0,
+
+    pub fn accepts(self: StructuredQualityGate, report: StructuredReport) bool {
+        const recall = if (report.cases == 0) 0 else @as(f64, @floatFromInt(report.relevant)) / @as(f64, @floatFromInt(report.cases));
+        return report.cases >= self.min_cases and recall >= self.min_recall and report.feasibility() >= self.min_feasibility;
+    }
+};
+
+pub fn evaluateStructured(runtime: *runtime_mod.Runtime, cases: []const StructuredCase, limit: usize, allocator: std.mem.Allocator) !StructuredReport {
+    var report: StructuredReport = .{};
+    for (cases) |case| {
+        if (case.task_id.len == 0 or case.min_scope < 0 or case.min_scope > 1 or case.min_metric < 0 or case.min_metric > 1 or case.min_structure < 0 or case.min_structure > 1) return error.InvalidAnnotation;
+        var result = try runtime.activate(case.context, limit, allocator);
+        defer result.deinit(allocator);
+        report.cases += 1;
+        for (result.items) |activation| if (activation.id == case.expected) {
+            report.relevant += 1;
+            report.scope_total += activation.signals.scope;
+            report.metric_total += activation.signals.metric;
+            report.structure_total += activation.signals.structure;
+            if (activation.signals.scope >= case.min_scope and activation.signals.metric >= case.min_metric and activation.signals.structure >= case.min_structure) report.feasible += 1;
+            break;
+        };
+    }
+    return report;
+}
+
 /// Evaluates a manually labelled suite. Relevance is constrained to 1..3 so
 /// malformed annotations cannot silently create meaningless quality results.
 pub fn evaluateAnnotated(runtime: *runtime_mod.Runtime, cases: []const AnnotatedCase, limit: usize, allocator: std.mem.Allocator) !AnnotationReport {

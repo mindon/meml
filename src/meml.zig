@@ -11,6 +11,8 @@ pub const persistence = @import("persistence.zig");
 pub const index_journal = @import("index_journal.zig");
 pub const signals = @import("signals.zig");
 pub const neural = @import("neural.zig");
+pub const science = @import("science.zig");
+pub const quantum = @import("quantum.zig");
 pub const evaluation = @import("evaluation.zig");
 
 pub const Kind = model.Kind;
@@ -25,11 +27,20 @@ pub const FeedbackVerifier = model.FeedbackVerifier;
 pub const FeedbackPolicy = model.FeedbackPolicy;
 pub const AnnotatedCase = evaluation.AnnotatedCase;
 pub const AnnotationReport = evaluation.AnnotationReport;
+pub const StructuredCase = evaluation.StructuredCase;
+pub const StructuredReport = evaluation.StructuredReport;
+pub const StructuredQualityGate = evaluation.StructuredQualityGate;
 pub const Outcome = model.Outcome;
 pub const FailureClass = model.FailureClass;
 pub const ConsolidationRecord = model.ConsolidationRecord;
 pub const FingerprintGroup = model.FingerprintGroup;
 pub const FingerprintMember = model.FingerprintMember;
+pub const Scope = model.Scope;
+pub const Metric = model.Metric;
+pub const MetricDirection = model.MetricDirection;
+pub const Artifact = model.Artifact;
+pub const Structure = model.Structure;
+pub const RecordInput = model.RecordInput;
 pub const Weights = model.Weights;
 pub const Context = model.Context;
 pub const Signals = model.Signals;
@@ -40,6 +51,7 @@ pub const SignalPipeline = signals.Pipeline;
 
 test {
     _ = @import("runtime_test.zig");
+    _ = @import("science_test.zig");
 }
 
 pub fn main() !void {
