@@ -72,6 +72,20 @@ claude mcp add --scope project --transport stdio meml -- node /Users/mindon/dev/
 
 ## WorkBuddy
 
+WorkBuddy 有两种接入方式：推荐使用与 CodeBuddy 兼容的本地插件 `integrations/codebuddy/meml-plugin/`，它包含 `.workbuddy-plugin/plugin.json`、Skill 和只读 MCP server；如果宿主需要自定义生命周期，再使用 `integrations/workbuddy/meml-plugin.ts` 适配器。
+
+插件方式可通过安装脚本准备：
+
+```sh
+curl -fsSL https://mindon.dev/meml/install-plugin | bash
+```
+
+安装后，在 WorkBuddy 的插件管理器中加载 `~/.meml/integrations/codebuddy/meml-plugin`。若 CLI 支持本地插件，也可运行：
+
+```sh
+workbuddy --plugin-dir ~/.meml/integrations/codebuddy/meml-plugin
+```
+
 `integrations/workbuddy/meml-plugin.ts` 是无框架耦合的 TypeScript 生命周期适配器。宿主在会话开始、规划前、工具结果已通过认证和会话结束时分别调用：
 
 ```ts
@@ -100,7 +114,29 @@ await memory.recordVerifiedExecution({
 await memory.shutdown();
 ```
 
-安装 Skill：复制 `integrations/skills/meml-agent-memory/` 到 WorkBuddy 的 Skill 发现目录，或把该目录注册为其自定义 Skill 路径。
+安装 Skill：执行 `curl -fsSL https://mindon.dev/meml/install-skill | bash`；脚本会将 Skill 放入共享插件的 `skills/meml-agent-memory/SKILL.md`。
+
+## CodeBuddy
+
+`integrations/codebuddy/meml-plugin/` 是 CodeBuddy 的标准插件目录，包含：
+
+- `.codebuddy-plugin/plugin.json`：插件清单。
+- `.mcp.json`：只读 `meml_recall` MCP server。
+- `skills/meml-agent-memory/SKILL.md`：规划前的记忆检索 Skill。
+
+一键安装并注册 MCP：
+
+```sh
+curl -fsSL https://mindon.dev/meml/install-plugin | bash
+```
+
+如果安装时未检测到 CodeBuddy CLI，手动加载本地插件：
+
+```sh
+codebuddy --plugin-dir ~/.meml/integrations/codebuddy/meml-plugin
+```
+
+Skill 调用名为 `/meml-memory:meml-agent-memory`。修改插件后使用 `/reload-plugins` 重新加载。
 
 ## 安全模型
 
