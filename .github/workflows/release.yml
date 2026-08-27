@@ -29,8 +29,7 @@ jobs:
           curl -fsSL "$ZIG_URL" -o zig.tar.xz
           tar -xJf zig.tar.xz
           echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
-          export PATH=$PATH:$HOME/.local/bin
-          ln -sf "$PWD/zig-$ZIG_VERSION/zig" $HOME/.local/bin/zig
+          export PATH=$PATH:$PWD/zig-$ZIG_VERSION/zig
           zig version
       - run: zig build test
 
@@ -68,8 +67,7 @@ jobs:
           curl -fsSL "$ZIG_URL" -o zig.tar.xz
           tar -xJf zig.tar.xz
           echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
-          export PATH=$PATH:$HOME/.local/bin
-          ln -sf "$PWD/zig-$ZIG_VERSION/zig" $HOME/.local/bin/zig
+          export PATH=$PATH:$PWD/zig-$ZIG_VERSION/zig
           zig version
       - name: Build release binary
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
