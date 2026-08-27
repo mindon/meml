@@ -3,19 +3,20 @@ import { homedir } from "node:os";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { MemlClient } from "../../../meml-client.ts";
 
+const readOnly = /^(1|true|yes)$/i.test(process.env.MEML_READ_ONLY ?? "");
+
 export const name = "meml-memory";
 export const inject = ["tools"];
 
 export function apply(ctx: Context): void {
   const client = new MemlClient({
     statePath: process.env.MEML_STATE_PATH ?? `${homedir()}/.meml/state/deepseek-harness.state`,
-    actor: "deepseek-harness",
-    receiptPrefix: "dsh-verified-",
+    readOnly,
   });
 
   ctx.tools.register(defineTool({
     name: "meml_recall",
-    description: "Retrieve relevant, explainable MEML long-term memory before planning. Read-only; it never executes actions.",
+    description: "Retrieve relevant, explainable MEML long-term memory before planning. Set MEML_READ_ONLY=true to disable default lifecycle updates; it never executes actions.",
     parameters: {
       query: { type: "string", required: true, description: "Current task or question." },
       goal: { type: "string", required: false, description: "Optional intended outcome." },

@@ -31,8 +31,28 @@ fn runScale(allocator: std.mem.Allocator, io: std.Io, count: usize) !void {
     defer result.deinit(allocator);
     const query_ns = query_started.durationTo(std.Io.Clock.now(.awake, io)).nanoseconds;
     const report = try meml.evaluation.evaluate(&runtime, &[_]meml.evaluation.Case{query}, 20, allocator);
-    std.debug.print("scale={d} write_ns={d} write_ops_per_sec={d:.2} query_ns={d} candidates={d} scored={d} returned={d} recall_at_20={d:.3} mrr={d:.3} ndcg={d:.3} pending_experiences={d}\n", .{
-        count, write_ns, rate(count, write_ns), query_ns, result.stats.candidates, result.stats.scored, result.stats.returned, report.recall(), report.mrr(), report.meanNdcg(), runtime.pending_experiences,
+    try std.Io.Dir.cwd().createDirPath(io, "test-artifacts");
+    const state_path = try std.fmt.allocPrint(allocator, "test-artifacts/bench-{d}.state", .{count});
+    defer allocator.free(state_path);
+    defer std.Io.Dir.cwd().deleteFile(io, state_path) catch {};
+    const journal_path = try std.fmt.allocPrint(allocator, "{s}.journal", .{state_path});
+    defer allocator.free(journal_path);
+    defer std.Io.Dir.cwd().deleteFile(io, journal_path) catch {};
+    const index_path = try std.fmt.allocPrint(allocator, "{s}.index", .{state_path});
+    defer allocator.free(index_path);
+    defer std.Io.Dir.cwd().deleteFile(io, index_path) catch {};
+    const index_journal_path = try std.fmt.allocPrint(allocator, "{s}.index.journal", .{state_path});
+    defer allocator.free(index_journal_path);
+    defer std.Io.Dir.cwd().deleteFile(io, index_journal_path) catch {};
+    const persist_started = std.Io.Clock.now(.awake, io);
+    try runtime.persistAtomic(io, state_path);
+    const persist_ns = persist_started.durationTo(std.Io.Clock.now(.awake, io)).nanoseconds;
+    const recover_started = std.Io.Clock.now(.awake, io);
+    var recovered = try meml.Runtime.recover(allocator, io, state_path);
+    defer recovered.deinit();
+    const recover_ns = recover_started.durationTo(std.Io.Clock.now(.awake, io)).nanoseconds;
+    std.debug.print("scale={d} write_ns={d} write_ops_per_sec={d:.2} query_ns={d} persist_ns={d} cold_recover_ns={d} candidates={d} scored={d} returned={d} recall_at_20={d:.3} mrr={d:.3} ndcg={d:.3} pending_experiences={d}\n", .{
+        count, write_ns, rate(count, write_ns), query_ns, persist_ns, recover_ns, result.stats.candidates, result.stats.scored, result.stats.returned, report.recall(), report.mrr(), report.meanNdcg(), runtime.pending_experiences,
     });
 }
 

@@ -18,12 +18,89 @@ fn trustedTransitionVerifier() meml.model.TransitionVerifier {
     return .{ .context = undefined, .verifyFn = verifyTrustedTransition };
 }
 
+fn signedFeedback(runtime: *meml.Runtime, key_pair: std.crypto.sign.Ed25519.KeyPair, target: u64, nonce: []const u8, timestamp: i64, expires_at: i64) !meml.FeedbackInput {
+    var input = meml.FeedbackInput{
+        .target = target,
+        .outcome = .success,
+        .failure_class = .none,
+        .actor = "trusted-tool",
+        .receipt = "opaque-receipt-reference",
+        .timestamp = timestamp,
+        .attestation = .{
+            .issuer = "trusted-tool",
+            .key_id = "test-key-1",
+            .nonce = nonce,
+            .issued_at = timestamp - 1,
+            .expires_at = expires_at,
+            .signature = std.mem.zeroes([64]u8),
+        },
+    };
+    const payload = try runtime.feedbackAttestationPayload(input, runtime.store.constNode(target).?, input.attestation.?);
+    defer runtime.allocator.free(payload);
+    input.attestation.?.signature = (try key_pair.sign(payload, null)).toBytes();
+    return input;
+}
+
 fn remoteLoadRevision(_: *anyopaque, io: std.Io, path: []const u8) !u64 {
     return meml.storage.VersionedLocal.provider().loadRevision(io, path);
 }
 
 fn remotePersistIfRevision(_: *anyopaque, store: *const meml.Store, next_id: u64, clock: i64, expected_revision: u64, io: std.Io, allocator: std.mem.Allocator, path: []const u8) !u64 {
     return meml.storage.VersionedLocal.provider().persistIfRevision(store, next_id, clock, expected_revision, io, allocator, path);
+}
+
+fn remoteRecover(_: *anyopaque, allocator: std.mem.Allocator, io: std.Io, path: []const u8) !meml.persistence.Loaded {
+    return meml.storage.VersionedLocal.provider().recover(allocator, io, path);
+}
+
+const FaultingRemote = struct {
+    timeout_after_commit: bool = false,
+    fail_recover: bool = false,
+    persist_attempts: usize = 0,
+    successful_commits: usize = 0,
+    recover_attempts: usize = 0,
+
+    fn self(context: *anyopaque) *FaultingRemote {
+        return @ptrCast(@alignCast(context));
+    }
+
+    fn loadRevision(_: *anyopaque, io: std.Io, path: []const u8) !u64 {
+        return meml.storage.VersionedLocal.provider().loadRevision(io, path);
+    }
+
+    fn persistIfRevision(context: *anyopaque, store: *const meml.Store, next_id: u64, clock: i64, expected_revision: u64, io: std.Io, allocator: std.mem.Allocator, path: []const u8) !u64 {
+        const remote = self(context);
+        remote.persist_attempts += 1;
+        const revision = try meml.storage.VersionedLocal.provider().persistIfRevision(store, next_id, clock, expected_revision, io, allocator, path);
+        remote.successful_commits += 1;
+        if (remote.timeout_after_commit) return error.RemoteTimeout;
+        return revision;
+    }
+
+    fn recover(context: *anyopaque, allocator: std.mem.Allocator, io: std.Io, path: []const u8) !meml.persistence.Loaded {
+        const remote = self(context);
+        remote.recover_attempts += 1;
+        if (remote.fail_recover) return error.RemoteUnavailable;
+        return meml.storage.VersionedLocal.provider().recover(allocator, io, path);
+    }
+
+    fn transport(self_ptr: *FaultingRemote) meml.storage.Remote.Transport {
+        return .{ .context = self_ptr, .loadRevisionFn = loadRevision, .persistIfRevisionFn = persistIfRevision, .recoverFn = recover };
+    }
+};
+
+fn writeTestFile(path: []const u8, content: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
+    defer file.close(std.testing.io);
+    var buffer: [1024]u8 = undefined;
+    var writer = file.writer(std.testing.io, &buffer);
+    try writer.interface.writeAll(content);
+    try writer.interface.flush();
+    try file.sync(std.testing.io);
+}
+
+fn expectMissing(path: []const u8) !void {
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().openFile(std.testing.io, path, .{}));
 }
 
 const test_artifacts_dir = "test-artifacts";
@@ -36,6 +113,47 @@ const test_artifacts_dir = "test-artifacts";
 fn testPath(comptime name: []const u8) []const u8 {
     std.Io.Dir.cwd().createDirPath(std.testing.io, test_artifacts_dir) catch {};
     return test_artifacts_dir ++ "/" ++ name;
+}
+
+test "signed feedback attestation binds fields, rejects replay, and survives recovery" {
+    const path = testPath("test-signed-feedback.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-signed-feedback.state.journal")) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-signed-feedback.state.index.journal")) catch {};
+
+    var seed: [32]u8 = undefined;
+    @memset(&seed, 7);
+    const key_pair = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+    const issuers = [_]meml.FeedbackAttestationIssuer{.{ .issuer = "trusted-tool", .key_id = "test-key-1", .public_key = key_pair.public_key.toBytes() }};
+    const policy = meml.FeedbackAttestationPolicy{ .issuers = &issuers };
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    try runtime.setFeedbackAttestationPolicy(policy);
+    const target = try runtime.assert("agent", "uses", "verified-tool", "current", 0.5);
+    const accepted = try signedFeedback(&runtime, key_pair, target, "nonce-1", 10, 20);
+    _ = try runtime.recordFeedback(accepted);
+    try std.testing.expectEqual(@as(usize, 1), runtime.store.attestation_replays.items.len);
+    const nodes_after_accept = runtime.store.nodes.items.len;
+    const relations_after_accept = runtime.store.relations.items.len;
+    try std.testing.expectError(error.ReplayedAttestation, runtime.recordFeedback(accepted));
+    try std.testing.expectEqual(nodes_after_accept, runtime.store.nodes.items.len);
+    try std.testing.expectEqual(relations_after_accept, runtime.store.relations.items.len);
+
+    var tampered = try signedFeedback(&runtime, key_pair, target, "nonce-2", 11, 20);
+    tampered.receipt = "different-receipt";
+    try std.testing.expectError(error.InvalidAttestationSignature, runtime.recordFeedback(tampered));
+    try std.testing.expectEqual(nodes_after_accept, runtime.store.nodes.items.len);
+
+    const expired = try signedFeedback(&runtime, key_pair, target, "nonce-3", 21, 20);
+    try std.testing.expectError(error.ExpiredAttestation, runtime.recordFeedback(expired));
+    try std.testing.expectEqual(nodes_after_accept, runtime.store.nodes.items.len);
+
+    try runtime.persist(std.testing.io, path);
+    runtime.deinit();
+    var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer recovered.deinit();
+    try recovered.setFeedbackAttestationPolicy(policy);
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.attestation_replays.items.len);
+    try std.testing.expectError(error.ReplayedAttestation, recovered.recordFeedback(accepted));
 }
 
 test "verified transitions alter future activation and persist audit" {
@@ -601,6 +719,23 @@ test "human-annotated evaluation accepts graded multi-task cases" {
     try std.testing.expectError(error.InvalidAnnotation, evaluation.evaluateAnnotated(&runtime, &invalid, 1, std.testing.allocator));
 }
 
+test "versioned annotation tasks calculate graded multi-label retrieval metrics" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const preferred = try runtime.assert("agent", "uses", "browser-tool", "browser", 0.9);
+    const related = try runtime.assert("agent", "uses", "browser-helper", "browser", 0.5);
+    const labels = [_]meml.RelevanceLabel{ .{ .expected = preferred, .relevance = 3 }, .{ .expected = related, .relevance = 1 } };
+    const tasks = [_]meml.AnnotatedTask{.{ .task_id = "browser-retrieval-v1", .context = .{ .query = "browser", .situation = "browser" }, .labels = &labels }};
+    const report = try evaluation.evaluateAnnotatedTasks(&runtime, &tasks, 2, std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), report.tasks);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), report.recall(), 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), report.mrr(), 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1), report.meanNdcg(), 0.000001);
+    const duplicate_labels = [_]meml.RelevanceLabel{ .{ .expected = preferred, .relevance = 3 }, .{ .expected = preferred, .relevance = 1 } };
+    const invalid = [_]meml.AnnotatedTask{.{ .task_id = "invalid-v1", .context = .{ .query = "browser" }, .labels = &duplicate_labels }};
+    try std.testing.expectError(error.InvalidAnnotation, evaluation.evaluateAnnotatedTasks(&runtime, &invalid, 2, std.testing.allocator));
+}
+
 test "agent evaluation suite covers multiple tasks and contextual drift" {
     var runtime = meml.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -865,10 +1000,10 @@ test "strict persistence rejects malformed and dangling state" {
     const path = testPath("test-invalid-state.state");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     const cases = [_][]const u8{
-        "MEML14 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0|0|extra\n",
-        "MEML14 0 2 0\nR|1|2|supports|1000000\n",
-        "MEML14 0 2 0\nL|1|1|500000|1\n",
-        "MEML14 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0\n",
+        "MEML15 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0|0|extra\n",
+        "MEML15 0 2 0\nR|1|2|supports|1000000\n",
+        "MEML15 0 2 0\nL|1|1|500000|1\n",
+        "MEML15 0 2 0\nN|1|experience|agent|uses|tool|work|success|1|500000|500000|active|0|0|0\n",
     };
     for (cases) |input| {
         var file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
@@ -879,6 +1014,41 @@ test "strict persistence rejects malformed and dangling state" {
         try writer.interface.flush();
         try std.testing.expectError(error.BadFile, meml.persistence.load(std.testing.allocator, std.testing.io, path));
     }
+}
+
+test "index checkpoint recovery discards corrupt, stale, and mismatched shards" {
+    const path = testPath("test-index-checkpoint-recovery.state");
+    const index = testPath("test-index-checkpoint-recovery.state.index");
+    const index_journal = testPath("test-index-checkpoint-recovery.state.index.journal");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, index) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, index_journal) catch {};
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    _ = try runtime.observe("agent", "uses", "checkpoint-safe", "current", "success", 1);
+    try runtime.persistAtomic(std.testing.io, path);
+    try std.testing.expect(runtime.index_checkpoint_revision > 0);
+
+    try writeTestFile(index_journal, "corrupt checkpoint\n");
+    var corrupt_recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer corrupt_recovered.deinit();
+    try std.testing.expectEqual(@as(u64, 1), corrupt_recovered.index_checkpoint_revision);
+    try expectMissing(index_journal);
+    var corrupt_results = try corrupt_recovered.activate(.{ .query = "checkpoint-safe" }, 1, std.testing.allocator);
+    defer corrupt_results.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), corrupt_results.items.len);
+
+    try writeTestFile(index, "MEMLIDX1 0\n1\n");
+    var stale_recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer stale_recovered.deinit();
+    try std.testing.expectEqual(@as(u64, 0), stale_recovered.index_checkpoint_revision);
+    try expectMissing(index);
+
+    try writeTestFile(index, "MEMLIDX1 1\n1\n999\n");
+    var mismatch_recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer mismatch_recovered.deinit();
+    try std.testing.expectEqual(@as(u64, 0), mismatch_recovered.index_checkpoint_revision);
+    try expectMissing(index);
 }
 
 test "journal recovery replays a complete interrupted state" {
@@ -1193,6 +1363,17 @@ test "plasticity policy is domain-configurable and transaction-safe" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.2), runtime.store.constNode(strategy).?.confidence, 0.000001);
 }
 
+test "feedback writes without proof until a verifier policy is configured" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const target = try runtime.assert("agent", "uses", "default-feedback", "current", 0.5);
+    _ = try runtime.recordFeedback(.{ .target = target, .outcome = .success, .failure_class = .none, .actor = "host", .receipt = "local-outcome-1", .timestamp = 1 });
+    try std.testing.expectEqual(@as(usize, 1), runtime.store.feedback_records.items.len);
+    runtime.setFeedbackVerifier(trustedFeedbackVerifier());
+    try std.testing.expectError(error.UntrustedFeedback, runtime.recordFeedback(.{ .target = target, .outcome = .success, .failure_class = .none, .actor = "forged-agent", .receipt = "local-outcome-2", .timestamp = 2 }));
+    try std.testing.expectEqual(@as(usize, 1), runtime.store.feedback_records.items.len);
+}
+
 test "untrusted feedback is rejected without semantic mutation" {
     const input =
         \\assert agent uses protected-tool browser confidence 0.8 as strategy
@@ -1304,16 +1485,58 @@ test "versioned local provider rejects stale revision without replacing state" {
     try std.testing.expectEqualStrings("first", loaded.store.nodes.items[0].object);
 }
 
+test "remote CAS timeout after commit recovers through authoritative revision" {
+    const path = testPath("test-remote-cas-timeout.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-remote-cas-timeout.state.journal")) catch {};
+    var remote = FaultingRemote{ .timeout_after_commit = true };
+    var transport = remote.transport();
+    const provider = meml.storage.Remote.provider(&transport);
+    var writer = meml.Runtime.init(std.testing.allocator);
+    defer writer.deinit();
+    _ = try writer.observe("agent", "uses", "remote-timeout", "current", "success", 1);
+    try std.testing.expectError(error.RemoteTimeout, writer.persistIfRevision(provider, 0, std.testing.io, path));
+    try std.testing.expectEqual(@as(usize, 1), remote.persist_attempts);
+    try std.testing.expectEqual(@as(usize, 1), remote.successful_commits);
+    try std.testing.expectEqual(@as(u64, 1), try provider.loadRevision(std.testing.io, path));
+
+    remote.timeout_after_commit = false;
+    var recovered = try meml.Runtime.recoverFrom(std.testing.allocator, provider, std.testing.io, path);
+    defer recovered.deinit();
+    try std.testing.expectEqual(@as(u64, 1), recovered.revision);
+    try std.testing.expectEqualStrings("remote-timeout", recovered.store.nodes.items[0].object);
+    try std.testing.expectEqual(@as(usize, 1), remote.recover_attempts);
+    _ = try recovered.observe("agent", "uses", "recovered-writer", "current", "success", 2);
+    try recovered.persistIfRevision(provider, recovered.revision, std.testing.io, path);
+    try std.testing.expectEqual(@as(u64, 2), try provider.loadRevision(std.testing.io, path));
+}
+
+test "remote CAS recovery failure leaves caller state untouched" {
+    const path = testPath("test-remote-recover-failure.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    var remote = FaultingRemote{ .fail_recover = true };
+    var transport = remote.transport();
+    const provider = meml.storage.Remote.provider(&transport);
+    try std.testing.expectError(error.RemoteUnavailable, meml.Runtime.recoverFrom(std.testing.allocator, provider, std.testing.io, path));
+    try std.testing.expectEqual(@as(usize, 1), remote.recover_attempts);
+    try expectMissing(path);
+}
+
 test "remote transport adapter preserves revision CAS contract" {
     const path = testPath("test-remote-cas.state");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
-    var transport = meml.storage.Remote.Transport{ .context = undefined, .loadRevisionFn = remoteLoadRevision, .persistIfRevisionFn = remotePersistIfRevision };
+    var transport = meml.storage.Remote.Transport{ .context = undefined, .loadRevisionFn = remoteLoadRevision, .persistIfRevisionFn = remotePersistIfRevision, .recoverFn = remoteRecover };
     const provider = meml.storage.Remote.provider(&transport);
     var writer = meml.Runtime.init(std.testing.allocator);
     defer writer.deinit();
     _ = try writer.observe("agent", "uses", "remote-transport", "service", "success", 1);
     try writer.persistIfRevision(provider, 0, std.testing.io, path);
     try std.testing.expectEqual(@as(u64, 1), try provider.loadRevision(std.testing.io, path));
+    var recovered = try meml.Runtime.recoverFrom(std.testing.allocator, provider, std.testing.io, path);
+    defer recovered.deinit();
+    try std.testing.expectEqual(@as(u64, 1), recovered.revision);
+    try std.testing.expectEqualStrings("remote-transport", recovered.store.nodes.items[0].object);
+    try std.testing.expectEqual(@as(u64, 0), recovered.index_checkpoint_revision);
 
     var stale = meml.Runtime.init(std.testing.allocator);
     defer stale.deinit();
@@ -1337,10 +1560,10 @@ test "documented MEML examples parse and execute" {
     }
 }
 
-test "structured records isolate scope and survive MEML14 recovery" {
-    const path = testPath("test-structured-meml14.state");
-    const journal = testPath("test-structured-meml14.state.journal");
-    const index_journal = testPath("test-structured-meml14.state.index.journal");
+test "structured records isolate scope and survive MEML15 recovery" {
+    const path = testPath("test-structured-meml15.state");
+    const journal = testPath("test-structured-meml15.state.journal");
+    const index_journal = testPath("test-structured-meml15.state.index.journal");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, journal) catch {};
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, index_journal) catch {};
@@ -1370,6 +1593,34 @@ test "structured records isolate scope and survive MEML14 recovery" {
     try std.testing.expectEqual(@as(usize, 1), recovered.store.structure_records.items.len);
 }
 
+test "model artifact manifest metadata survives semantic persistence" {
+    const path = testPath("test-artifact-manifest.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-artifact-manifest.state.journal")) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-artifact-manifest.state.index")) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-artifact-manifest.state.index.journal")) catch {};
+    const manifest = meml.ArtifactManifest{
+        .provider = "deterministic-neural",
+        .model_version = "v1",
+        .checksum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        .byte_length = 4096,
+        .locator = "host-managed://checkpoints/neural-v1",
+    };
+    const data = try manifest.recordData();
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    _ = try runtime.record(.{ .subject = "agent", .predicate = "uses", .object = "neural-provider", .context = "current", .timestamp = 1, .scopes = &data.scopes, .metrics = &data.metrics, .artifacts = &data.artifacts });
+    try runtime.persist(std.testing.io, path);
+    var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer recovered.deinit();
+    try std.testing.expectEqual(@as(usize, 2), recovered.store.scoped_records.items.len);
+    try std.testing.expectEqualStrings("model.version", recovered.store.scoped_records.items[0].scope.key);
+    try std.testing.expectEqualStrings("provider", recovered.store.scoped_records.items[1].scope.key);
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.metric_records.items.len);
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.artifact_records.items.len);
+    try std.testing.expectEqualStrings(manifest.checksum, recovered.store.artifact_records.items[0].artifact.digest);
+}
+
 test "structured evaluation enforces explainable feasibility" {
     var runtime = meml.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -1381,7 +1632,7 @@ test "structured evaluation enforces explainable feasibility" {
     try std.testing.expect((meml.StructuredQualityGate{ .min_recall = 1, .min_feasibility = 1 }).accepts(report));
 }
 
-test "MEML14 loader rejects old state headers without compatibility" {
+test "MEML15 loader rejects old state headers without compatibility" {
     const path = testPath("test-unsupported-version.state");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     var file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });

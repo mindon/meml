@@ -1,0 +1,2 @@
+{"schema_version":1,"task_id":"agent.browser-tool.in-browser.v1","context":{"query":"browser","situation":"browser","now":0},"labels":[{"record_key":"agent.browser-tool.v1","relevance":3},{"record_key":"agent.browser-helper.v1","relevance":1}]}
+{"schema_version":1,"task_id":"agent.data-tool.in-data.v1","context":{"query":"data-tool","situation":"data","now":0},"labels":[{"record_key":"agent.data-tool.v1","relevance":3}]}

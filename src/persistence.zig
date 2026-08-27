@@ -83,7 +83,7 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
     defer file.close(io);
     var buffer: [4096]u8 = undefined;
     var writer = file.writer(io, &buffer);
-    try writer.interface.print("MEML14 {d} {d} {d}\n", .{ revision, next_id, clock });
+    try writer.interface.print("MEML15 {d} {d} {d}\n", .{ revision, next_id, clock });
     for (store.nodes.items) |node| {
         const subject = try encode(store.allocator, node.subject);
         defer store.allocator.free(subject);
@@ -152,6 +152,7 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         defer store.allocator.free(receipt);
         try writer.interface.print("F|{d}|{d}|{s}|{s}|{s}|{s}\n", .{ record.evidence, record.target, @tagName(record.outcome), @tagName(record.failure_class), actor, receipt });
     }
+    for (store.attestation_replays.items) |record| try writer.interface.print("V|{x}|{d}\n", .{ record.digest, record.expires_at });
     for (store.transition_records.items) |record| {
         const reason = try encode(store.allocator, record.reason);
         defer store.allocator.free(reason);
@@ -252,7 +253,7 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
     var lines = std.mem.splitScalar(u8, data, '\n');
     const header = lines.next() orelse return error.BadFile;
     var header_fields = std.mem.splitScalar(u8, header, ' ');
-    if (!std.mem.eql(u8, header_fields.next() orelse return error.BadFile, "MEML14")) return error.UnsupportedVersion;
+    if (!std.mem.eql(u8, header_fields.next() orelse return error.BadFile, "MEML15")) return error.UnsupportedVersion;
     loaded.revision = try integer(u64, header_fields.next());
     loaded.next_id = try integer(u64, header_fields.next());
     loaded.clock = try integer(i64, header_fields.next());
@@ -370,6 +371,14 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
             defer allocator.free(receipt);
             try finish(&fields);
             try loaded.store.recordFeedback(.{ .evidence = evidence, .target = target, .outcome = outcome, .failure_class = failure_class, .actor = actor, .receipt = receipt });
+        } else if (std.mem.eql(u8, tag, "V")) {
+            const encoded_digest = fields.next() orelse return error.BadFile;
+            if (encoded_digest.len != 64) return error.BadFile;
+            var digest: [32]u8 = undefined;
+            _ = std.fmt.hexToBytes(&digest, encoded_digest) catch return error.BadFile;
+            const expires_at = try integer(i64, fields.next());
+            try finish(&fields);
+            try loaded.store.recordAttestationReplay(.{ .digest = digest, .expires_at = expires_at });
         } else if (std.mem.eql(u8, tag, "X")) {
             const id = try integer(u64, fields.next());
             const target = try integer(u64, fields.next());

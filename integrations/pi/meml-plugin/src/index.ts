@@ -3,17 +3,18 @@ import { homedir } from "node:os";
 import { Type } from "typebox";
 import { MemlClient } from "../../../meml-client.ts";
 
+const readOnly = /^(1|true|yes)$/i.test(process.env.MEML_READ_ONLY ?? "");
+
 export default function memlPlugin(pi: ExtensionAPI): void {
   const client = new MemlClient({
     statePath: process.env.MEML_STATE_PATH ?? `${homedir()}/.meml/state/pi.state`,
-    actor: "pi-agent",
-    receiptPrefix: "pi-verified-",
+    readOnly,
   });
 
   pi.registerTool({
     name: "meml_recall",
     label: "Recall MEML memory",
-    description: "Retrieve relevant, explainable long-term memory before planning. This is read-only and never executes actions.",
+    description: "Retrieve relevant, explainable long-term memory before planning. Set MEML_READ_ONLY=true to disable default lifecycle updates; it never executes actions.",
     promptSnippet: "Recall relevant long-term memory before planning when prior context could change the answer.",
     parameters: Type.Object({
       query: Type.String({ description: "Current task or question to match against memory." }),

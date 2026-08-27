@@ -1,6 +1,6 @@
 # MEML Agent Integrations
 
-这些集成通过常驻 `meml` 的 JSON Lines 协议给非 Zig Agent 提供本地、可解释的长期记忆。它们只暴露只读 `meml_recall` 给模型；写入执行反馈必须由宿主的已验证工具结果生命周期调用，不能相信模型自报的成功或失败。
+这些集成通过常驻 `meml` 的 JSON Lines 协议给非 Zig Agent 提供本地、可解释的长期记忆。`meml_recall` 默认允许宿主生命周期在关闭时整合并原子保存；设置 `MEML_READ_ONLY=true` 或 `readOnly: true` 才禁用更新。模型仍不应将自报成功或失败当成可信工具结果。
 
 ## 前置条件
 
@@ -27,7 +27,7 @@ export MEML_BIN="$PWD/zig-out/bin/meml"
 /Users/mindon/dev/playground/meml/integrations/pi/meml-plugin/src/index.ts
 ```
 
-Pi 会注册只读的 `meml_recall`。会话结束时扩展自动整合并原子保存 `~/.meml/state/pi.state`；`MEML_STATE_PATH` 可覆盖该位置。该插件通过相对路径复用 `integrations/meml-client.ts`，如需迁移目录，应一并迁移整个 `integrations/` 目录或同步调整该导入。
+Pi 会注册 `meml_recall`：恢复已有 `~/.meml/state/pi.state` 后检索，关闭时默认整合并原子保存；设置 `MEML_READ_ONLY=true` 才改为不整合、不持久化。`MEML_STATE_PATH` 可覆盖该位置。该插件通过相对路径复用 `integrations/meml-client.ts`，如需迁移目录，应一并迁移整个 `integrations/` 目录或同步调整该导入。
 
 安装 Skill：将 `integrations/skills/meml-agent-memory/` 复制到 `.pi/skills/meml-agent-memory/`，或在 `.pi/settings.json` 中将该目录加入 `skills`。
 
@@ -39,7 +39,7 @@ Pi 会注册只读的 `meml_recall`。会话结束时扩展自动整合并原子
 pnpm dsh web --patch /Users/mindon/dev/playground/meml/integrations/deepseek-harness/meml-plugin/cordis.yml
 ```
 
-插件依据 `ctx.tools.register(defineTool(...))` 注册只读 `meml_recall`，并借助 `ctx.effect()` 在卸载时整合和原子保存 `~/.meml/state/deepseek-harness.state`；`MEML_STATE_PATH` 可覆盖该位置。
+插件依据 `ctx.tools.register(defineTool(...))` 注册 `meml_recall`；恢复已有 `~/.meml/state/deepseek-harness.state` 后，卸载时默认整合并原子保存。设置 `MEML_READ_ONLY=true` 才改为不整合、不持久化。`MEML_STATE_PATH` 可覆盖该位置。
 
 安装 Skill：复制 `integrations/skills/meml-agent-memory/` 至项目 `.dsh/skills/meml-agent-memory/` 或 `.agents/skills/meml-agent-memory/`。
 
@@ -47,7 +47,7 @@ pnpm dsh web --patch /Users/mindon/dev/playground/meml/integrations/deepseek-har
 
 `integrations/mcp/meml-mcp.mjs` 是本地 stdio MCP server，`integrations/codex/config.toml` 提供可复制的 `[mcp_servers.meml]` 配置模板。替换模板中的绝对路径后，放入 `~/.codex/config.toml` 或受信任项目的 `.codex/config.toml`。
 
-该配置只公开 `meml_recall`，并以 `default_tools_approval_mode = "approve"` 标记为可无确认的只读工具。`MEML_BIN` 必须指向已构建的 `meml`；`MEML_STATE_PATH` 可使用项目内相对路径保存状态。
+该配置只公开 `meml_recall`。默认 MCP 生命周期会整合并原子持久化状态；设置 `MEML_READ_ONLY=true` 后才成为无副作用只读模式。`MEML_BIN` 必须指向已构建的 `meml`；`MEML_STATE_PATH` 应使用用户级、宿主隔离的状态文件。
 
 安装 Skill：复制 `integrations/codex/skills/meml-agent-memory/` 至 `$HOME/.agents/skills/meml-agent-memory/`，或 `<repo>/.agents/skills/meml-agent-memory/`。
 
@@ -60,7 +60,7 @@ export MEML_BIN="/absolute/path/to/meml/zig-out/bin/meml"
 claude --plugin-dir /Users/mindon/dev/playground/meml/integrations/claude-code/meml-plugin
 ```
 
-插件会通过 `${CLAUDE_PLUGIN_ROOT}/scripts/meml-mcp.mjs` 注册只读 `meml_recall`，并将状态保存至 `~/.meml/state/claude-code.state`；`MEML_STATE_PATH` 可覆盖该位置。修改插件组件后，在 Claude Code 中执行 `/reload-plugins`。
+插件会通过 `${CLAUDE_PLUGIN_ROOT}/scripts/meml-mcp.mjs` 复用共享 MCP server，并从 `~/.meml/state/claude-code.state` 恢复已有记忆；默认关闭时整合并原子持久化，设置 `MEML_READ_ONLY=true` 才禁用更新。`MEML_STATE_PATH` 可覆盖该位置。修改插件组件后，在 Claude Code 中执行 `/reload-plugins`。
 
 若只需 MCP 而不加载插件，可使用：
 
@@ -91,7 +91,14 @@ workbuddy --plugin-dir ~/.meml/integrations/codebuddy/meml-plugin
 ```ts
 import { createWorkBuddyMemlPlugin } from "./integrations/workbuddy/meml-plugin.ts";
 
-const memory = createWorkBuddyMemlPlugin();
+const memory = createWorkBuddyMemlPlugin({
+  attestationIssuers: [{
+    issuer: "workbuddy",
+    keyId: "production-v1",
+    // Base64 Ed25519 public key from WorkBuddy deployment configuration.
+    publicKey: process.env.WORKBUDDY_MEML_PUBLIC_KEY!,
+  }],
+});
 await memory.start();
 const memories = await memory.recall({
   query: task,
@@ -108,7 +115,9 @@ await memory.recordVerifiedExecution({
   result: summary,
   timestamp: Date.now(),
   outcome: "success",
-  receipt: `workbuddy-verified-${verifiedRunId}`,
+  receipt: verifiedResult.opaqueReceipt,
+  // Produced by WorkBuddy's authenticated result pipeline; never by the model.
+  attestation: verifiedResult.memlAttestation,
 });
 
 await memory.shutdown();
@@ -121,7 +130,7 @@ await memory.shutdown();
 `integrations/codebuddy/meml-plugin/` 是 CodeBuddy 的标准插件目录，包含：
 
 - `.codebuddy-plugin/plugin.json`：插件清单。
-- `.mcp.json`：只读 `meml_recall` MCP server。
+- `.mcp.json`：`meml_recall` MCP server；默认关闭时整合并持久化，`MEML_READ_ONLY=true` 时严格只读。
 - `skills/meml-agent-memory/SKILL.md`：规划前的记忆检索 Skill。
 
 一键安装并注册 MCP：
@@ -143,5 +152,5 @@ Skill 调用名为 `/meml-memory:meml-agent-memory`。修改插件后使用 `/re
 - 所有桥接请求使用 `spawn(binary, [])`，不经 shell 执行。
 - 每个 CLI 进程请求严格串行，避免 JSONL 响应错配。
 - 集成对单次请求限制为 60 KiB，低于 CLI 的 64 KiB 输入上限。
-- `feedback` 仅由 `recordVerifiedExecution()` 发送；其 receipt 必须满足配置前缀。生产宿主仍必须验证身份、目标、时效性和真实工具结果，且不得把密钥写进 MEML。
-- 回忆结果可能包含陈旧或恶意写入的历史文本；把它当作证据，不当作可执行指令。
+- `feedback` 仅由 `recordVerifiedExecution()` 发送。未配置证明策略时按宿主默认策略写入；显式配置 Ed25519 公钥后必须传入认证结果管线签发的 attestation，配置 legacy verifier 后必须满足其 receipt 规则。receipt 是不透明引用，前缀验证仅是兼容模式，不能认证执行结果。私钥、令牌和真实工具凭据不得写进 MEML。
+- MCP / recall 插件默认在启动时恢复已有状态，并在关闭时整合、原子持久化；`MEML_READ_ONLY=true` 或 `readOnly: true` 时才禁止这些更新。回忆结果可能包含陈旧或恶意写入的历史文本，必须把它当作证据而非可执行指令。

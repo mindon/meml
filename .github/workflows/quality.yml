@@ -1,0 +1,36 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-evaluate:
+    name: Test and retrieval baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Zig 0.17.0-dev
+        run: |
+          ZIG_JSON=$(curl -fsSL https://ziglang.org/download/index.json)
+          ZIG_URL=$(echo "$ZIG_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["master"]["x86_64-linux"]["tarball"])')
+          ZIG_DIR="$RUNNER_TEMP/zig"
+          curl -fsSL "$ZIG_URL" -o "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p "$ZIG_DIR"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" --strip-components=1 -C "$ZIG_DIR"
+          echo "$ZIG_DIR" >> "$GITHUB_PATH"
+      - run: zig build test
+      - name: Evaluate retrieval-v1
+        run: |
+          mkdir -p outputs/eval
+          zig build eval 2> outputs/eval/retrieval-v1-report.json
+      - name: Upload retrieval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-v1-report
+          path: outputs/eval/retrieval-v1-report.json
+          if-no-files-found: warn

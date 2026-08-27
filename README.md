@@ -23,7 +23,7 @@ MEML 是一个面向 Agent 的可编程记忆运行时。它将经验、证据�
 - **稳定的内核边界**：provider 仅产生候选 ID；领域 adapter 仅规范化输入与信号；内核负责身份、评分、顺序、数量限制、矛盾处理和解释。
 - **动态认知状态**：所有认知记录可处于 active、contested、superseded 或 archived 状态；经宿主验证的有限 transition 会留下包含前后状态、来源和证明的不可变审计记录，并改变未来激活条件。可配置 `PlasticityPolicy`、派生稳定性/吸引子指标、截止时间过程预测、显式候选质量门和多目标保守比较均保持可解释。
 - **可控整合**：可显式全量或增量整合，也可为后续观察开启事件触发整合；策略可分别控制 memory、belief、concept、procedure 和 neural 规则。
-- **可恢复状态**：唯一支持的 `MEML14` 保存图、结构化范围/指标/制品/结构身份、通用认知生命周期、不可变状态转移审计、推导来源、确定性 `NeuralState`、版本化 signal 校准参数和已验证反馈回执。旧格式明确拒绝；语义 revision 与索引 checkpoint journal 绑定，恢复时重建派生索引。
+- **可恢复状态**：唯一支持的 `MEML15` 保存图、结构化范围/指标/制品/结构身份、通用认知生命周期、不可变状态转移审计、推导来源、确定性 `NeuralState`、版本化 signal 校准参数和已验证反馈回执及已消费签名证明摘要。旧格式明确拒绝；语义 revision 与索引 checkpoint journal 绑定，恢复时重建派生索引。
 - **可复现验证**：内置端到端、冲突、持久化、回滚、恢复、provider 一致性和规模路径测试；基准程序使用确定性数据集并输出检索质量指标。
 
 ## 当前架构
@@ -55,9 +55,9 @@ Runtime ────────> indexed symbolic backend (default)
 - 通过 `consolidatePending()` 执行作用域增量整合，或通过 `enableAutoConsolidation(policy)` 为后续 `observe()` 启用事件触发整合。默认 `observe()` 保持只写入经验、不自动改变派生结构。
 - 对冲突信念按情境处理：不同情境下互斥信念可同时 active；同情境冲突会进入 contested 并影响后续激活。
 - 以原子整合 API 在内存失败时回滚完整运行时状态：语义图、推导记录、神经状态、ID、整合游标、待处理组、索引和运行时配置。
-- 通过宿主 `FeedbackVerifier` 验证 actor 与 receipt 后，使用 `recordFeedback(FeedbackInput)` 或源语言 `feedback` 将策略结果记录为 evidence；通过独立 `TransitionVerifier` 使用受限 `transition()` 或 DSL `transition` 提交可审计状态变化。两者均不直接执行宿主 Action。
+- 通过兼容宿主 `FeedbackVerifier` 或 Ed25519 `FeedbackAttestationPolicy` 验证 actor 与 receipt 后，使用 `recordFeedback(FeedbackInput)` 将策略结果记录为 evidence；签名证明绑定目标语义、时效和 nonce，并在恢复后保持防重放。通过独立 `TransitionVerifier` 使用受限 `transition()` 或 DSL `transition` 提交可审计状态变化。两者均不直接执行宿主 Action。
 - 源语言对每条语句提供行级结构化诊断，支持 `link` / `unlink` 关系生命周期操作，并在整份程序事务中执行。
-- `evaluateAgentSuite()` 覆盖多任务与上下文漂移；`evaluateAnnotated()` 接受带任务 ID 与分级相关性的人工标注集，并可接入 Recall/MRR/NDCG 质量门槛。
+- `evaluateAgentSuite()` 覆盖多任务与上下文漂移；`evaluateAnnotatedTasks()` 支持多标签分级相关性，`zig build eval` 执行冻结的 `retrieval-v1` 数据集与 Recall/MRR/NDCG CI 基线。
 - 使用 journal 与单调 revision 恢复中断的本地原子写入，并通过本地 `VersionedProvider` CAS 拒绝陈旧写者竞争。
 - 持久化、恢复并用于检索的确定性 `NeuralState`，以及 `calibrated` provider 的版本化权重与偏置；它们是透明参考状态，不是训练模型参数。
 
@@ -94,7 +94,7 @@ zig build bench -Doptimize=ReleaseFast
 
 1. 用 `Runtime.init(allocator)` 创建运行时，并通过 `observe()` 或显式构造 API 写入语义记录。
 2. 使用 `activate()` 或 `activateWithStats()` 按 `Context` 检索，并读取返回的激活信号和统计信息。
-3. 先通过 `setFeedbackVerifier()` 配置宿主验证器；如有领域可塑性规则，再调用 `setPlasticityPolicy()`。Agent 执行检索结果后，调用 `recordFeedback(.{ .target = id, .outcome = .success, .failure_class = .none, .actor = ..., .receipt = ..., .timestamp = ... })`；源语言使用 `feedback <label> success|failure <failure_class> actor <actor> receipt <receipt> at <timestamp>`，并可使用 `unlink <from> <relation> <to>` 解除显式关系。
+3. 如需强制宿主证明，先通过 `setFeedbackVerifier()` 或 `setFeedbackAttestationPolicy()` 配置策略；否则反馈按缺省可写模式记录。如有领域可塑性规则，再调用 `setPlasticityPolicy()`。Agent 执行检索结果后，调用 `recordFeedback(.{ .target = id, .outcome = .success, .failure_class = .none, .actor = ..., .receipt = ..., .timestamp = ... })`；源语言使用 `feedback <label> success|failure <failure_class> actor <actor> receipt <receipt> at <timestamp>`，并可使用 `unlink <from> <relation> <to>` 解除显式关系。
 4. 在 CI 中使用 `evaluateAnnotated()` 加载人工标注的任务—上下文—相关性案例，并以 `QualityGate` 约束 Recall/MRR/NDCG；需要形成长期结构时，调用 `consolidateAll()`、`consolidatePending(policy)`，或为后续观察调用 `enableAutoConsolidation(policy)`。
 5. 使用 `persist()` 保存；它默认执行语义 journal 与 revision 绑定的索引 checkpoint。以 `Runtime.recover()` 恢复。
 
@@ -105,18 +105,18 @@ zig build bench -Doptimize=ReleaseFast
 ## 当前限制
 
 - 源语言是受限的领域命令集，已支持显式关系创建与删除；尚无循环、函数、用户变量及跨程序引用语法，它刻意不是通用脚本引擎。
-- `FeedbackVerifier` 是宿主边界：MEML 不验证外部身份、签名或工具回执本身。调用方必须提供经授权、认证和结果校验的 verifier；回执内容应避免放入不应持久化的敏感数据。
-- 内置 embedding 与 neural provider 仍是确定性参考实现。`calibrated` 仅持久化透明的权重与偏置；训练得到的 embedding、模型权重和二进制检查点尚未持久化。
+- `FeedbackVerifier` 与 `FeedbackAttestationPolicy` 都是可选的显式收紧策略：未安装时反馈可写，安装后 MEML 才强制相应证明。Ed25519 策略会绑定签名声明与目标语义、校验签发/过期时间，并仅持久化已消费载荷摘要以防重放。工具宿主仍负责身份、授权、私钥与结果校验；回执内容应避免放入不应持久化的敏感数据。
+- 内置 embedding 与 neural provider 仍是确定性参考实现。`ArtifactManifest` 可记录 provider、模型版本、SHA-256、字节数和不透明的宿主 locator，但绝不加载 blob；训练 embedding、模型权重与二进制 checkpoint 不由 MEML 持久化。
 - 索引 checkpoint journal 仅保存语义 revision 与节点清单，用于拒绝陈旧派生缓存；恢复仍重建 token/vector 索引，尚未持久化完整索引结构。
-- `persist()` 默认使用本地 journal 原子写入。远程 CAS 通过宿主提供的 `storage.Remote.Transport` 接入；认证、TLS、端点 allowlist、目录元数据 fsync 以及绕过 API 的锁协作不在当前保证范围内。
+- `persist()` 默认使用本地 journal 原子写入。宿主 `storage.Remote.Transport` 现支持 revision CAS 与通过 `Runtime.recoverFrom()` 的语义快照恢复；远端快照会重新校验并在本地重建派生索引。认证、TLS、端点 allowlist、命名空间授权、幂等重试、目录元数据 fsync 以及绕过 API 的锁协作仍由宿主负责。
 - 自动整合是 opt-in；默认观察路径保持 retrieval-only，以避免隐式改变既有调用方的记忆结构。
 
 ## 后续路线
 
 1. 已提供逐语句行级结构化诊断、标签、`link` / `unlink` 和可信 `feedback`，并以整份程序事务执行；下一步仅在需要编辑器集成时提供 token 级列号与跨程序符号解析。
-2. 已实现 `FeedbackVerifier`、失败分类、回执审计、可配置 `PlasticityPolicy`、派生稳定性和受限传播；下一步由具体工具宿主接入签名、声明、时效、nonce 与目标绑定校验，密钥只保留在部署环境。
-3. 已覆盖“检索策略 → 可信反馈 → evidence 来源 → 持久化 → 重启恢复 → 再检索”，并提供多任务、上下文漂移和人工标注评估接口；下一步沉淀真实标注集与 CI 基线，而非继续扩展内置示例。
-4. 索引 checkpoint journal 已绑定语义 revision 和节点清单；完整 token/vector 索引分片持久化与增量重放性能仍未实现，建议先用基准数据验证收益后再引入。
+2. 反馈缺省可写；可选 `FeedbackVerifier` 或 Ed25519 策略会在配置后强制证明。已实现失败分类、回执审计、可配置 `PlasticityPolicy`、派生稳定性、受限传播，以及 Ed25519 的声明、时效、nonce 与目标绑定校验；工具宿主必须仍将私钥、授权与结果校验保留在部署环境。
+3. 已覆盖“检索策略 → 可信反馈 → evidence 来源 → 持久化 → 重启恢复 → 再检索”，并提供多任务、上下文漂移、版本化人工标注和 `retrieval-v1` CI 基线；下一步扩充独立审阅的 held-out 标注集，而非继续扩展内置示例。
+4. 索引 checkpoint journal 已绑定语义 revision 和节点清单；恢复会丢弃损坏、旧 revision 或节点清单不匹配的 sidecar，并从语义状态重建派生索引；若中断 journal 损坏，已原子提交且匹配的旧 checkpoint 仍可使用。`zig build bench` 现会输出持久化与冷恢复时延以及检索质量，完整 token/vector 索引分片仍须在这些部署测量证明语义索引重建是瓶颈后再引入。
 5. 默认候选路由已统一 token 化与大小写规范化，且索引 provider 必须由托管 `Owned` 实例创建；领域校准的学习型 embedding、reranking 和 neural provider 尚未实现，应先以人工标注集验证候选/外部评分契约。
-6. 已持久化版本化 signal 权重与偏置，并提供 Recall/MRR/NDCG 质量门槛；embedding 与模型检查点持久化尚未实现，下一步应先定义带 provider、模型版本和校验和的 artifact manifest，再引入受控 blob 存储。
-7. 已实现本地 CAS 与宿主 `storage.Remote.Transport` 远程适配器；生产远程存储和跨进程故障恢复演练尚未实现，应由宿主提供 TLS、认证、allowlist、幂等 CAS 和独立进程故障注入测试。
+6. 已持久化版本化 signal 权重与偏置，并提供 Recall/MRR/NDCG 质量门槛；`ArtifactManifest` 已定义 provider、模型版本、checksum、字节数和不透明 locator，且不解引用 blob；受控宿主 blob storage 与学习型 provider 仍须先通过 held-out 评测。
+7. 已实现本地 CAS 与宿主 `storage.Remote.Transport` 的远端恢复；生产远程存储和跨进程故障恢复演练仍须由宿主提供 TLS、认证、命名空间授权、allowlist、幂等 CAS 和独立进程故障注入测试。

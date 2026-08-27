@@ -32,6 +32,7 @@ jobs:
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" --strip-components=1 -C "$ZIG_DIR"
           echo "$ZIG_DIR" >> "$GITHUB_PATH"
       - run: zig build test
+      - run: zig build eval
 
   build:
     name: Build ${{ matrix.asset }}

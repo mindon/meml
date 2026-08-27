@@ -133,7 +133,7 @@ _ = id;
 
 ### 2.4 动态认知状态
 
-MEML 只改变可审计的记忆状态，不直接选择或执行宿主 Action。宿主必须先安装 `TransitionVerifier`，再调用受限的 `transition()`；每次变更都会以 `TransitionRecord` 持久化在 `MEML14` 中。
+MEML 只改变可审计的记忆状态，不直接选择或执行宿主 Action。宿主必须先安装 `TransitionVerifier`，再调用受限的 `transition()`；每次变更都会以 `TransitionRecord` 持久化在 `MEML15` 中。
 
 ```zig
 runtime.setTransitionVerifier(host_transition_verifier);
@@ -155,7 +155,17 @@ defer audit.deinit(a);
 
 受限 DSL：`transition <label> reinforce|penalize|decay|stabilize <0..1> actor <actor> receipt <receipt> at <timestamp> reason <reason>`；`set_state` 则将数值替换为 `active|contested|superseded|archived`。详见 [`docs/dynamic-memory.md`](docs/dynamic-memory.md) 和 [`examples/dynamic-memory.jsonl`](examples/dynamic-memory.jsonl)。
 
-### 2.5 Procedure 选择质量门
+### 2.5 签名反馈证明
+
+对于会影响长期记忆的执行反馈，应优先使用 Ed25519 证明而非兼容回调。仅通过 `setFeedbackAttestationPolicy` 安装宿主公钥；`FeedbackAttestation` 签名的规范化载荷会绑定 issuer/key ID、nonce、签发与过期时间、反馈字段、不透明 receipt 引用，以及目标节点的所有语义字段。有效证明的 issuer 必须与 actor 一致，且必须同时满足事件时间与运行时逻辑时钟的有效期。MEML 仅把已接受载荷的 SHA-256 摘要和过期时间持久化到 `MEML15`，因此恢复后仍会拒绝重放；不会保存 nonce、签名或私钥。
+
+CLI 宿主通过 `set_attestation_verifier` 配置 Base64 编码的公钥，并在 `feedback.attestation` 提供 Base64 编码的 64 字节签名。`receipt` 必须是不透明引用而不是凭据。`clear_verifier` 会同时清除旧回调与签名证明策略；`recover` 后必须重新安装公钥配置。
+
+### 2.6 冻结检索评测
+
+`zig build eval` 会加载 `eval/datasets/retrieval-v1/seed.jsonl`，通过稳定的 `record_key` 解析 `annotations.jsonl` 中的人工标签，并与 `eval/baselines/retrieval-v1.json` 比较多标签 Recall@K、MRR 和分级 NDCG。输出 JSON 报告是确定性的；CI 会在每次 push 和 PR 上执行该质量门。数据集更新必须新建版本目录并经人工审阅基线，不得改写既有 benchmark。
+
+### 2.7 Procedure 选择质量门
 
 `selectProcedures()` 只对宿主显式给定的 procedure ID 做只读比较，不会检索、扩张候选或执行 Action。gate 要求 active 状态、严格 scope 匹配、稳定性、verified outcome 样本数、成功概率和证据覆盖度均达标；不达标项保留拒绝原因，但没有排名。
 
@@ -172,7 +182,7 @@ defer choices.deinit(a);
 
 `predictProcedureAt()` 适合带 cutoff 的历史预测评估；`selectProcedures()` 则只使用当前认知状态，避免把未来状态混入历史选择回放。JSONL 示例见 [`examples/procedure-selection.jsonl`](examples/procedure-selection.jsonl)。
 
-### 2.6 显式多目标比较
+### 2.8 显式多目标比较
 
 `compareProcedures()` 仅比较调用方提供的 procedure ID，并要求调用方显式声明目标、方向、权重和可选硬约束。目标可为 `stability`、`success_probability`、`evidence_coverage`，或精确的 metric `name + unit`；内核不会推断领域语义或进行单位换算。
 
@@ -192,9 +202,7 @@ defer comparisons.deinit(a);
 
 metric 的 uncertainty 会以保守方向纳入：maximize 取 `value - uncertainty`，minimize 取 `value + uncertainty`。缺 metric、方向冲突或硬约束失败的候选没有 score/rank，但保留逐目标拒绝原因。该 API 不调用检索、backend、图扩张、工具或 Action。示例见 [`examples/procedure-comparison.jsonl`](examples/procedure-comparison.jsonl)。
 
-### 2.7 核心 API
-
-### 2.5 核心 API
+### 2.9 核心 API
 
 `Runtime` 的公开方法（`src/runtime.zig`）：
 
@@ -227,7 +235,7 @@ metric 的 uncertainty 会以保守方向纳入：maximize 取 `value - uncertai
 | | `persistTo(provider, io, path)` / `persistIfRevision(provider, expected_revision, io, path)` | 自定义 / CAS |
 | | `recover(allocator, io, path) !Runtime` | 恢复 |
 
-### 2.4 关键类型与枚举
+### 2.10 关键类型与枚举
 
 ```zig
 pub const Kind = enum { experience, evidence, claim, memory, belief, concept, procedure, context };
@@ -313,7 +321,8 @@ meml.neural.retrievalProvider()
 | `predict_procedure` | `procedure,scopes?,cutoff` | `{ok,success_probability,evidence_coverage,…}` |
 | `select_procedures` | `ids,scopes?,gate?` | `{ok,selections}`；仅比较显式候选 |
 | `compare_procedures` | `ids,scopes?,min_samples?,objectives` | `{ok,comparisons}`；显式目标的保守多目标比较 |
-| `feedback` | `target,outcome,failure_class,actor,receipt,timestamp` | `{ok,evidence}` |
+| `feedback` | `target,outcome,failure_class,actor,receipt,timestamp,attestation?` | `{ok,evidence}` |
+| `set_attestation_verifier` | `issuers[{issuer,key_id,public_key}]` | `{ok}`；Base64 Ed25519 公钥 |
 | `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,统计}` |
 | `auto_consolidate` | `enable,…` | `{ok}` |
 | `signals` | `providers` | `{ok,providers}` |
@@ -337,7 +346,7 @@ meml.neural.retrievalProvider()
 
 ### 3.3 多源记忆导入与默认存储
 
-`import_meml` 会按 `files` 数组顺序读取当前工作目录下的相对 `.meml` 文件，并将整批语义记录作为一次内存事务导入。它不是 `MEML14` 快照合并：每份文件都有独立标签作用域，只允许 `observe`、`assert` 与引用本文件标签的 `link`；`feedback`、`transition`、`unlink`、`signals`、`consolidate` 与检索语句会被拒绝。路径不得为绝对路径或包含 `.` / `..` 段，单文件上限 512 KiB、整批上限 4 MiB、最多 64 个文件。导入不自动持久化，成功后应显式调用 `persist`。
+`import_meml` 会按 `files` 数组顺序读取当前工作目录下的相对 `.meml` 文件，并将整批语义记录作为一次内存事务导入。它不是 `MEML15` 快照合并：每份文件都有独立标签作用域，只允许 `observe`、`assert` 与引用本文件标签的 `link`；`feedback`、`transition`、`unlink`、`signals`、`consolidate` 与检索语句会被拒绝。路径不得为绝对路径或包含 `.` / `..` 段，单文件上限 512 KiB、整批上限 4 MiB、最多 64 个文件。导入不自动持久化，成功后应显式调用 `persist`。
 
 ```jsonl
 {"op":"import_meml","files":["examples/import-preferences.meml","examples/import-history.meml"]}
@@ -401,7 +410,7 @@ meml({"op": "persist", "path": "meml.state", "atomic": True})
 proc.stdin.close()
 ```
 
-> 注意：`feedback` 前必须先 `set_verifier`。未设置 verifier 时返回 `FeedbackVerifierRequired`，未信任 actor 返回 `UntrustedActor`，receipt 前缀不匹配返回 `UntrustedReceipt`。
+> 注意：`feedback` 缺省可写。调用 `set_verifier` 或 `set_attestation_verifier` 后才启用证明强制：未信任 actor 返回 `UntrustedActor`，receipt 前缀不匹配返回 `UntrustedReceipt`，缺失或无效 attestation 会被拒绝。
 
 ---
 
@@ -460,7 +469,7 @@ var report = try meml.source.execute(&runtime, script_text, allocator);
 ./zig-out/bin/meml '{"op":"exec","program":"observe user prefers typescript frontend success at 10"}'
 ```
 
-> `exec` 执行的脚本若包含 `feedback`，需先在同一进程内 `set_verifier`。
+> `exec` 执行的脚本可缺省包含 `feedback`；仅当需要强制宿主证明时，才在同一进程内配置 `set_verifier` 或 `set_attestation_verifier`。
 
 参考脚本：`examples/contextual_retrieval.meml`、`examples/demo.meml`。
 

@@ -123,6 +123,33 @@ pub const StructureRecord = struct { node: u64, structure: Structure };
 /// and receipt; unverified feedback never mutates semantic state.
 pub const Outcome = enum { success, failure };
 pub const FailureClass = enum { none, timeout, transport, tool_error, invalid_result, policy_denied, unauthorized, cancelled, unknown };
+pub const FeedbackAttestation = struct {
+    issuer: []const u8,
+    key_id: []const u8,
+    nonce: []const u8,
+    issued_at: i64,
+    expires_at: i64,
+    signature: [64]u8,
+};
+
+/// A host-public-key trust entry. Secret keys never enter MEML state.
+pub const FeedbackAttestationIssuer = struct {
+    issuer: []const u8,
+    key_id: []const u8,
+    public_key: [32]u8,
+};
+
+/// Runtime-only signed-feedback policy. Its keys are deployment configuration,
+/// while consumed attestation digests are persisted with semantic state.
+pub const FeedbackAttestationPolicy = struct {
+    issuers: []const FeedbackAttestationIssuer,
+};
+
+pub const AttestationReplayRecord = struct {
+    digest: [32]u8,
+    expires_at: i64,
+};
+
 pub const FeedbackInput = struct {
     target: u64,
     outcome: Outcome,
@@ -130,6 +157,7 @@ pub const FeedbackInput = struct {
     actor: []const u8,
     receipt: []const u8,
     timestamp: i64,
+    attestation: ?FeedbackAttestation = null,
 };
 pub const FeedbackRecord = struct {
     evidence: u64,
@@ -168,7 +196,7 @@ pub const PlasticityRule = struct {
 
 /// Host-owned configuration for how verified outcomes reshape future cognitive
 /// dynamics. It is intentionally runtime configuration rather than persisted
-/// memory state, so deployment policy and authorization stay outside MEML14.
+/// memory state, so deployment policy and authorization stay outside MEML15.
 pub const PlasticityPolicy = struct {
     success: PlasticityRule = .{ .adjustment = .reinforce, .amount = 0.1 },
     timeout: PlasticityRule = .{ .state = .contested, .adjustment = .penalize, .amount = 0.05 },

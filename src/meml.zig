@@ -14,6 +14,7 @@ pub const neural = @import("neural.zig");
 pub const science = @import("science.zig");
 pub const quantum = @import("quantum.zig");
 pub const evaluation = @import("evaluation.zig");
+pub const artifact = @import("artifact.zig");
 
 pub const Kind = model.Kind;
 pub const RelationKind = model.RelationKind;
@@ -27,6 +28,10 @@ pub const Relation = model.Relation;
 pub const Feedback = source.Feedback;
 pub const FeedbackInput = model.FeedbackInput;
 pub const FeedbackRecord = model.FeedbackRecord;
+pub const FeedbackAttestation = model.FeedbackAttestation;
+pub const FeedbackAttestationIssuer = model.FeedbackAttestationIssuer;
+pub const FeedbackAttestationPolicy = model.FeedbackAttestationPolicy;
+pub const AttestationReplayRecord = model.AttestationReplayRecord;
 pub const FeedbackVerifier = model.FeedbackVerifier;
 pub const TransitionVerifier = model.TransitionVerifier;
 pub const PlasticityRule = model.PlasticityRule;
@@ -48,6 +53,9 @@ pub const ProcedureComparisonStatus = model.ProcedureComparisonStatus;
 pub const ProcedureComparison = model.ProcedureComparison;
 pub const AnnotatedCase = evaluation.AnnotatedCase;
 pub const AnnotationReport = evaluation.AnnotationReport;
+pub const RelevanceLabel = evaluation.RelevanceLabel;
+pub const AnnotatedTask = evaluation.AnnotatedTask;
+pub const VersionedAnnotationReport = evaluation.VersionedAnnotationReport;
 pub const StructuredCase = evaluation.StructuredCase;
 pub const StructuredReport = evaluation.StructuredReport;
 pub const StructuredQualityGate = evaluation.StructuredQualityGate;
@@ -69,6 +77,7 @@ pub const Scope = model.Scope;
 pub const Metric = model.Metric;
 pub const MetricDirection = model.MetricDirection;
 pub const Artifact = model.Artifact;
+pub const ArtifactManifest = artifact.Manifest;
 pub const Structure = model.Structure;
 pub const RecordInput = model.RecordInput;
 pub const Weights = model.Weights;
@@ -82,6 +91,7 @@ pub const SignalPipeline = signals.Pipeline;
 test {
     _ = @import("runtime_test.zig");
     _ = @import("science_test.zig");
+    _ = @import("artifact.zig");
 }
 
 pub fn main() !void {

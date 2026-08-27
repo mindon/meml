@@ -42,6 +42,25 @@ pub const AnnotatedCase = struct {
     relevance: u8,
 };
 
+pub const RelevanceLabel = struct { expected: u64, relevance: u8 };
+pub const AnnotatedTask = struct { task_id: []const u8, context: model.Context, labels: []const RelevanceLabel };
+pub const VersionedAnnotationReport = struct {
+    tasks: usize = 0,
+    relevant: usize = 0,
+    retrieved_relevant: usize = 0,
+    reciprocal_rank: f64 = 0,
+    ndcg: f64 = 0,
+    pub fn recall(self: VersionedAnnotationReport) f64 {
+        return if (self.relevant == 0) 0 else @as(f64, @floatFromInt(self.retrieved_relevant)) / @as(f64, @floatFromInt(self.relevant));
+    }
+    pub fn mrr(self: VersionedAnnotationReport) f64 {
+        return if (self.tasks == 0) 0 else self.reciprocal_rank / @as(f64, @floatFromInt(self.tasks));
+    }
+    pub fn meanNdcg(self: VersionedAnnotationReport) f64 {
+        return if (self.tasks == 0) 0 else self.ndcg / @as(f64, @floatFromInt(self.tasks));
+    }
+};
+
 pub const AnnotationReport = struct {
     cases: usize = 0,
     hits: usize = 0,
@@ -291,6 +310,52 @@ pub fn evaluateAnnotated(runtime: *runtime_mod.Runtime, cases: []const Annotated
             report.ndcg += 1 / std.math.log2(rank + 1);
             break;
         };
+    }
+    return report;
+}
+
+fn relevanceGain(relevance: u8) f64 {
+    return @floatFromInt((@as(u32, 1) << @as(u5, @intCast(relevance))) - 1);
+}
+fn discountedGain(relevance: u8, rank: usize) f64 {
+    return relevanceGain(relevance) / std.math.log2(@as(f64, @floatFromInt(rank + 1)));
+}
+
+pub fn evaluateAnnotatedTasks(runtime: *runtime_mod.Runtime, tasks: []const AnnotatedTask, limit: usize, allocator: std.mem.Allocator) !VersionedAnnotationReport {
+    var report: VersionedAnnotationReport = .{};
+    for (tasks, 0..) |task, task_index| {
+        if (task.task_id.len == 0 or task.labels.len == 0) return error.InvalidAnnotation;
+        for (tasks[task_index + 1 ..]) |other| if (std.mem.eql(u8, task.task_id, other.task_id)) return error.InvalidAnnotation;
+        var ideal: f64 = 0;
+        for (task.labels, 0..) |label, label_index| {
+            if (label.relevance == 0 or label.relevance > 3 or runtime.store.constNode(label.expected) == null) return error.InvalidAnnotation;
+            for (task.labels[label_index + 1 ..]) |other| if (label.expected == other.expected) return error.InvalidAnnotation;
+            ideal += discountedGain(label.relevance, label_index + 1);
+        }
+        var sorted = std.ArrayList(RelevanceLabel).empty;
+        defer sorted.deinit(allocator);
+        try sorted.appendSlice(allocator, task.labels);
+        std.mem.sort(RelevanceLabel, sorted.items, {}, struct {
+            fn lessThan(_: void, a: RelevanceLabel, b: RelevanceLabel) bool {
+                return a.relevance > b.relevance;
+            }
+        }.lessThan);
+        ideal = 0;
+        for (sorted.items, 0..) |label, index| ideal += discountedGain(label.relevance, index + 1);
+        var result = try runtime.activate(task.context, limit, allocator);
+        defer result.deinit(allocator);
+        var dcg: f64 = 0;
+        var first: ?usize = null;
+        for (result.items, 0..) |item, rank| for (task.labels) |label| if (item.id == label.expected) {
+            report.retrieved_relevant += 1;
+            if (first == null) first = rank + 1;
+            dcg += discountedGain(label.relevance, rank + 1);
+            break;
+        };
+        report.tasks += 1;
+        report.relevant += task.labels.len;
+        if (first) |rank| report.reciprocal_rank += 1 / @as(f64, @floatFromInt(rank));
+        report.ndcg += dcg / ideal;
     }
     return report;
 }

@@ -8,12 +8,15 @@ const Array = Json.Array;
 const Allocator = std.mem.Allocator;
 
 /// Long-lived runtime state shared across all requests in one process.
+const ConfiguredAttestationIssuer = meml.FeedbackAttestationIssuer;
+
 const State = struct {
     allocator: Allocator,
     io: std.Io,
     environ: std.process.Environ,
     runtime: meml.Runtime,
     trusted_actors: std.ArrayList([]const u8),
+    attestation_issuers: std.ArrayList(ConfiguredAttestationIssuer),
     receipt_prefix: []const u8 = "",
 
     fn init(allocator: Allocator, io: std.Io, environ: std.process.Environ) State {
@@ -23,12 +26,18 @@ const State = struct {
             .environ = environ,
             .runtime = meml.Runtime.init(allocator),
             .trusted_actors = .empty,
+            .attestation_issuers = .empty,
         };
     }
 
     fn deinit(self: *State) void {
         for (self.trusted_actors.items) |actor| self.allocator.free(actor);
         self.trusted_actors.deinit(self.allocator);
+        for (self.attestation_issuers.items) |issuer| {
+            self.allocator.free(issuer.issuer);
+            self.allocator.free(issuer.key_id);
+        }
+        self.attestation_issuers.deinit(self.allocator);
         if (self.receipt_prefix.len > 0) self.allocator.free(self.receipt_prefix);
         self.runtime.deinit();
     }
@@ -114,6 +123,14 @@ fn ensureParentDirectory(io: std.Io, path: []const u8) !void {
     const separator = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
     if (separator == 0) return;
     try std.Io.Dir.cwd().createDirPath(io, path[0..separator]);
+}
+
+fn decodeBase64Exact(comptime length: usize, encoded: []const u8) ![length]u8 {
+    const decoded_length = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch return error.InvalidBase64;
+    if (decoded_length != length) return error.InvalidBase64;
+    var decoded: [length]u8 = undefined;
+    _ = std.base64.standard.Decoder.decode(&decoded, encoded) catch return error.InvalidBase64;
+    return decoded;
 }
 
 fn requiredF64(o: ObjectMap, key: []const u8) !f64 {
@@ -618,14 +635,29 @@ fn cmdActivate(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer
 fn cmdFeedback(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
     const outcome = std.meta.stringToEnum(meml.Outcome, fOptStr(o, "outcome")) orelse return error.InvalidOutcome;
     const failure_class = std.meta.stringToEnum(meml.FailureClass, fOptStr(o, "failure_class")) orelse return error.InvalidFailureClass;
-    const evidence = try state.runtime.recordFeedback(.{
+    var input = meml.FeedbackInput{
         .target = fU64(o, "target", 0),
         .outcome = outcome,
         .failure_class = failure_class,
         .actor = fOptStr(o, "actor"),
         .receipt = fOptStr(o, "receipt"),
         .timestamp = fInt(o, "timestamp", 0),
-    });
+    };
+    if (fObject(o, "attestation")) |attestation| {
+        const issuer = fStr(attestation, "issuer") orelse return error.InvalidAttestation;
+        const key_id = fStr(attestation, "key_id") orelse return error.InvalidAttestation;
+        const nonce = fStr(attestation, "nonce") orelse return error.InvalidAttestation;
+        const signature = try decodeBase64Exact(64, fStr(attestation, "signature") orelse return error.InvalidAttestation);
+        input.attestation = .{
+            .issuer = issuer,
+            .key_id = key_id,
+            .nonce = nonce,
+            .issued_at = fInt(attestation, "issued_at", std.math.minInt(i64)),
+            .expires_at = fInt(attestation, "expires_at", std.math.minInt(i64)),
+            .signature = signature,
+        };
+    }
+    const evidence = try state.runtime.recordFeedback(input);
     var resp = ObjectMap.empty;
     try resp.put(a, "ok", .{ .bool = true });
     try resp.put(a, "evidence", .{ .integer = @intCast(evidence) });
@@ -782,9 +814,46 @@ fn cmdSetVerifier(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Wri
     try writeValue(writer, .{ .object = okObject(a) });
 }
 
+fn deinitAttestationIssuers(allocator: Allocator, issuers: *std.ArrayList(ConfiguredAttestationIssuer)) void {
+    for (issuers.items) |issuer| {
+        allocator.free(issuer.issuer);
+        allocator.free(issuer.key_id);
+    }
+    issuers.deinit(allocator);
+}
+
+fn appendAttestationIssuer(allocator: Allocator, issuers: *std.ArrayList(ConfiguredAttestationIssuer), issuer: []const u8, key_id: []const u8, public_key: [32]u8) !void {
+    const issuer_copy = try allocator.dupe(u8, issuer);
+    errdefer allocator.free(issuer_copy);
+    const key_id_copy = try allocator.dupe(u8, key_id);
+    errdefer allocator.free(key_id_copy);
+    try issuers.append(allocator, .{ .issuer = issuer_copy, .key_id = key_id_copy, .public_key = public_key });
+}
+
+fn cmdSetAttestationVerifier(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const input_issuers = fArray(o, "issuers") orelse return error.MissingAttestationIssuers;
+    var issuers = std.ArrayList(ConfiguredAttestationIssuer).empty;
+    errdefer deinitAttestationIssuers(state.allocator, &issuers);
+    for (input_issuers.items) |value| {
+        const entry = switch (value) {
+            .object => |item| item,
+            else => return error.InvalidAttestationIssuer,
+        };
+        const issuer = fStr(entry, "issuer") orelse return error.InvalidAttestationIssuer;
+        const key_id = fStr(entry, "key_id") orelse return error.InvalidAttestationIssuer;
+        const public_key = try decodeBase64Exact(32, fStr(entry, "public_key") orelse return error.InvalidAttestationIssuer);
+        try appendAttestationIssuer(state.allocator, &issuers, issuer, key_id, public_key);
+    }
+    try state.runtime.setFeedbackAttestationPolicy(.{ .issuers = issuers.items });
+    deinitAttestationIssuers(state.allocator, &state.attestation_issuers);
+    state.attestation_issuers = issuers;
+    try writeValue(writer, .{ .object = okObject(a) });
+}
+
 fn cmdClearVerifier(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
     _ = o;
     state.runtime.clearFeedbackVerifier();
+    state.runtime.clearFeedbackAttestationPolicy();
     state.runtime.clearTransitionVerifier();
     try writeValue(writer, .{ .object = okObject(a) });
 }
@@ -903,6 +972,7 @@ fn dispatch(state: *State, op: []const u8, o: ObjectMap, a: Allocator, writer: *
     if (std.mem.eql(u8, op, "import_meml")) return cmdImportMeml(state, o, a, writer);
     if (std.mem.eql(u8, op, "exec")) return cmdExec(state, o, a, writer);
     if (std.mem.eql(u8, op, "set_verifier")) return cmdSetVerifier(state, o, a, writer);
+    if (std.mem.eql(u8, op, "set_attestation_verifier")) return cmdSetAttestationVerifier(state, o, a, writer);
     if (std.mem.eql(u8, op, "clear_verifier")) return cmdClearVerifier(state, o, a, writer);
     if (std.mem.eql(u8, op, "set_plasticity_policy")) return cmdSetPlasticityPolicy(state, o, a, writer);
     return error.UnknownOp;

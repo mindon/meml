@@ -41,6 +41,14 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run the MEML deterministic retrieval benchmark");
     bench_step.dependOn(&bench_run.step);
 
+    const eval = b.addExecutable(.{
+        .name = "meml-eval",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/eval.zig"), .target = target, .optimize = optimize }),
+    });
+    const eval_run = b.addRunArtifact(eval);
+    const eval_step = b.step("eval", "Run the frozen retrieval-v1 quality baseline");
+    eval_step.dependOn(&eval_run.step);
+
     const demo = b.addExecutable(.{
         .name = "meml-demo",
         .root_module = b.createModule(.{

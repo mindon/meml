@@ -1,0 +1,1 @@
+{"schema_version":1,"dataset_id":"retrieval-v1","limit":5,"min_tasks":2,"min_recall_at_k":1.0,"min_mrr":1.0,"min_ndcg":1.0}

@@ -133,7 +133,7 @@ _ = id;
 
 ### 2.4 Dynamic Cognitive State
 
-MEML changes only auditable memory state; it never chooses or executes a host Action. A host must install a `TransitionVerifier` before calling bounded `transition()`; every change is persisted as a `TransitionRecord` in `MEML14`.
+MEML changes only auditable memory state; it never chooses or executes a host Action. A host must install a `TransitionVerifier` before calling bounded `transition()`; every change is persisted as a `TransitionRecord` in `MEML15`.
 
 ```zig
 runtime.setTransitionVerifier(host_transition_verifier);
@@ -155,7 +155,17 @@ defer audit.deinit(a);
 
 The bounded DSL form is `transition <label> reinforce|penalize|decay|stabilize <0..1> actor <actor> receipt <receipt> at <timestamp> reason <reason>`; for `set_state`, replace the numeric value with `active|contested|superseded|archived`. See [`docs/dynamic-memory.md`](docs/dynamic-memory.md) and [`examples/dynamic-memory.jsonl`](examples/dynamic-memory.jsonl).
 
-### 2.5 Procedure Selection Quality Gate
+### 2.5 Signed feedback attestations
+
+For executable feedback, prefer an Ed25519 attestation over the compatibility callback. Install only host public keys with `setFeedbackAttestationPolicy`; `FeedbackAttestation` signs a canonical payload that binds issuer/key ID, nonce, issuance and expiry, feedback fields, opaque receipt reference, and every semantic field of the target node. A valid attestation must name the same actor as its issuer and remain valid at the event and runtime clocks. MEML persists only the SHA-256 digest and expiry of an accepted payload in `MEML15`, so a consumed attestation remains rejected after recovery; it never persists its nonce, signature, or private key.
+
+CLI hosts configure Base64-encoded public keys with `set_attestation_verifier` and pass a Base64-encoded 64-byte signature under `feedback.attestation`. Treat `receipt` as an opaque reference, not a credential. `clear_verifier` removes both the legacy and signed-feedback policies; public-key configuration must be reinstalled after `recover`.
+
+### 2.6 Frozen retrieval evaluation
+
+`zig build eval` loads `eval/datasets/retrieval-v1/seed.jsonl`, resolves the human labels in `annotations.jsonl` through stable `record_key` values, and compares multi-label Recall@K, MRR, and graded NDCG against `eval/baselines/retrieval-v1.json`. The emitted JSON report is deterministic; CI runs this gate on every push and pull request. Dataset updates must use a new version directory and a reviewed baseline rather than rewriting an existing benchmark.
+
+### 2.7 Procedure Selection Quality Gate
 
 `selectProcedures()` compares only procedure IDs explicitly supplied by the host. It never retrieves or expands candidates and never executes an Action. The gate requires active state, exact scope compatibility, stability, verified-outcome sample count, success probability, and evidence coverage; rejected candidates retain their reason dimensions but receive no rank.
 
@@ -172,7 +182,7 @@ defer choices.deinit(a);
 
 Use `predictProcedureAt()` for cutoff-based historical prediction evaluation. `selectProcedures()` uses current cognitive state only, preventing future state from leaking into historical selection replay. The JSONL example is [`examples/procedure-selection.jsonl`](examples/procedure-selection.jsonl).
 
-### 2.6 Explicit Multi-Objective Comparison
+### 2.8 Explicit Multi-Objective Comparison
 
 `compareProcedures()` compares only caller-provided procedure IDs and requires callers to declare every target, direction, weight, and optional hard constraint. Targets may be `stability`, `success_probability`, `evidence_coverage`, or an exact metric `name + unit`; the kernel never infers domain semantics or converts units.
 
@@ -192,7 +202,7 @@ defer comparisons.deinit(a);
 
 Metric uncertainty is incorporated conservatively: maximize uses `value - uncertainty`, while minimize uses `value + uncertainty`. Candidates with missing metrics, direction conflicts, or failed constraints have no score/rank but retain per-objective rejection reasons. This API never invokes retrieval, a backend, graph expansion, a tool, or an Action. See [`examples/procedure-comparison.jsonl`](examples/procedure-comparison.jsonl).
 
-### 2.7 Core API
+### 2.9 Core API
 
 Public methods on `Runtime` (`src/runtime.zig`):
 
@@ -225,7 +235,7 @@ Public methods on `Runtime` (`src/runtime.zig`):
 | | `persistTo(provider, io, path)` / `persistIfRevision(provider, expected_revision, io, path)` | Custom / CAS |
 | | `recover(allocator, io, path) !Runtime` | Restore |
 
-### 2.4 Key types and enums
+### 2.10 Key types and enums
 
 ```zig
 pub const Kind = enum { experience, evidence, claim, memory, belief, concept, procedure, context };
@@ -311,7 +321,8 @@ Response format: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 | `predict_procedure` | `procedure,scopes?,cutoff` | `{ok,success_probability,evidence_coverage,…}` |
 | `select_procedures` | `ids,scopes?,gate?` | `{ok,selections}`; compares explicit candidates only |
 | `compare_procedures` | `ids,scopes?,min_samples?,objectives` | `{ok,comparisons}`; conservative multi-objective comparison with explicit targets |
-| `feedback` | `target,outcome,failure_class,actor,receipt,timestamp` | `{ok,evidence}` |
+| `feedback` | `target,outcome,failure_class,actor,receipt,timestamp,attestation?` | `{ok,evidence}` |
+| `set_attestation_verifier` | `issuers[{issuer,key_id,public_key}]` | `{ok}`; Base64 Ed25519 public keys |
 | `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,stats}` |
 | `auto_consolidate` | `enable,…` | `{ok}` |
 | `signals` | `providers` | `{ok,providers}` |
@@ -335,7 +346,7 @@ Enum values:
 
 ### 3.3 Multi-source memory import and default storage
 
-`import_meml` reads relative `.meml` files below the current working directory in `files` order and imports the entire batch as one in-memory transaction. It is not a `MEML14` snapshot merge: each document has an isolated label scope and may contain only `observe`, `assert`, and `link` statements that reference labels in the same document. `feedback`, `transition`, `unlink`, `signals`, `consolidate`, and retrieval statements are rejected. Paths must not be absolute or contain `.` / `..` components; the limits are 512 KiB per file, 4 MiB per batch, and 64 files. Importing does not persist automatically; call `persist` explicitly after success.
+`import_meml` reads relative `.meml` files below the current working directory in `files` order and imports the entire batch as one in-memory transaction. It is not a `MEML15` snapshot merge: each document has an isolated label scope and may contain only `observe`, `assert`, and `link` statements that reference labels in the same document. `feedback`, `transition`, `unlink`, `signals`, `consolidate`, and retrieval statements are rejected. Paths must not be absolute or contain `.` / `..` components; the limits are 512 KiB per file, 4 MiB per batch, and 64 files. Importing does not persist automatically; call `persist` explicitly after success.
 
 ```jsonl
 {"op":"import_meml","files":["examples/import-preferences.meml","examples/import-history.meml"]}
@@ -399,7 +410,7 @@ meml({"op": "persist", "path": "meml.state", "atomic": True})
 proc.stdin.close()
 ```
 
-> Note: you must call `set_verifier` before `feedback`. Without a verifier it returns `FeedbackVerifierRequired`, an untrusted actor returns `UntrustedActor`, and a receipt-prefix mismatch returns `UntrustedReceipt`.
+> Note: `feedback` is writable by default. Calling `set_verifier` or `set_attestation_verifier` explicitly enables proof enforcement: an untrusted actor returns `UntrustedActor`, a receipt-prefix mismatch returns `UntrustedReceipt`, and missing or invalid attestations are rejected.
 
 ---
 
@@ -458,7 +469,7 @@ var report = try meml.source.execute(&runtime, script_text, allocator);
 ./zig-out/bin/meml '{"op":"exec","program":"observe user prefers typescript frontend success at 10"}'
 ```
 
-> A script run through `exec` that contains `feedback` requires `set_verifier` first within the same process.
+> A script run through `exec` may contain `feedback` by default. Configure `set_verifier` or `set_attestation_verifier` in the same process only when feedback must require host proof.
 
 Reference scripts: `examples/contextual_retrieval.meml`, `examples/demo.meml`.
 

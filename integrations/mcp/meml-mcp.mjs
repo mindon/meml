@@ -5,10 +5,9 @@ import { homedir } from "node:os";
 import readline from "node:readline";
 
 const MAX_REQUEST_BYTES = 60 * 1024;
-const actor = process.env.MEML_ACTOR ?? "mcp-host";
-const receiptPrefix = process.env.MEML_RECEIPT_PREFIX ?? "mcp-verified-";
 const binary = process.env.MEML_BIN ?? "meml";
 const statePath = resolve(process.env.MEML_STATE_PATH ?? `${homedir()}/.meml/state/mcp.state`);
+const readOnly = /^(1|true|yes)$/i.test(process.env.MEML_READ_ONLY ?? "");
 
 class MemlBridge {
   process;
@@ -18,7 +17,7 @@ class MemlBridge {
 
   async start() {
     if (this.process) return;
-    await mkdir(dirname(statePath), { recursive: true });
+    if (!readOnly) await mkdir(dirname(statePath), { recursive: true });
     this.process = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
     this.process.stdout.setEncoding("utf8");
     this.process.stdout.on("data", (chunk) => this.acceptStdout(chunk));
@@ -29,11 +28,9 @@ class MemlBridge {
       this.rejectAll(new Error(`MEML CLI exited (${signal ?? code ?? "unknown"})`));
     });
     await this.call({ op: "ping" });
-    await this.call({ op: "set_verifier", trusted_actors: [actor], receipt_prefix: receiptPrefix });
     try {
       await access(statePath);
       await this.call({ op: "recover", path: statePath });
-      await this.call({ op: "set_verifier", trusted_actors: [actor], receipt_prefix: receiptPrefix });
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
@@ -56,8 +53,10 @@ class MemlBridge {
   async close() {
     if (!this.process) return;
     try {
-      await this.call({ op: "consolidate", repeat_threshold: 2 });
-      await this.call({ op: "persist", path: statePath, atomic: true });
+      if (!readOnly) {
+        await this.call({ op: "consolidate", repeat_threshold: 2 });
+        await this.call({ op: "persist", path: statePath, atomic: true });
+      }
     } finally {
       this.process.stdin.end();
       this.process.kill();
@@ -115,7 +114,7 @@ class MemlBridge {
 const bridge = new MemlBridge();
 const tools = [{
   name: "meml_recall",
-  description: "Retrieve relevant, explainable MEML long-term memory before planning. Read-only; never executes actions or writes feedback.",
+  description: "Retrieve relevant, explainable MEML long-term memory before planning. The host lifecycle updates memory by default; set MEML_READ_ONLY=true to disable updates.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -128,7 +127,7 @@ const tools = [{
       limit: { type: "integer", minimum: 1, maximum: 20, default: 5, description: "Maximum memories to return." },
     },
   },
-  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: readOnly, openWorldHint: false },
 }];
 
 function send(message) {

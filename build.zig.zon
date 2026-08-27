@@ -1,6 +1,6 @@
 .{
     .name = .meml,
-    .version = "0.1.1",
+    .version = "0.2.0",
     .fingerprint = 0x3243c1902476d340,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
@@ -8,6 +8,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "eval",
         "README.md",
         "README.en.md",
         "USAGE.md",

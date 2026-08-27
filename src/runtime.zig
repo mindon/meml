@@ -29,6 +29,7 @@ pub const Runtime = struct {
     auto_consolidation_enabled: bool = false,
     auto_consolidation_policy: ConsolidationPolicy = .{},
     feedback_verifier: ?model.FeedbackVerifier = null,
+    feedback_attestation_policy: ?model.FeedbackAttestationPolicy = null,
     transition_verifier: ?model.TransitionVerifier = null,
     plasticity_policy: model.PlasticityPolicy = .{},
 
@@ -208,11 +209,10 @@ pub const Runtime = struct {
     }
 
     /// Writes a generic structured record. Domain adapters only normalize this
-    /// input; they never obtain direct Store mutation access.
+    /// input; they never obtain direct Store mutation access. Direct writes are
+    /// deliberately incremental: source programs use beginTransaction() when a
+    /// batch requires all-or-nothing semantics.
     pub fn record(self: *Runtime, input: model.RecordInput) !u64 {
-        var transaction = try self.beginTransaction();
-        defer transaction.deinit();
-        errdefer transaction.rollback() catch {};
         self.clock = @max(self.clock, input.timestamp);
         const id = try self.makeRecord(input);
         if (input.kind != .experience) return id;
@@ -282,14 +282,29 @@ pub const Runtime = struct {
         };
     }
 
-    /// Configures the host-owned verifier for external tool receipts. The
-    /// runtime never accepts a feedback outcome until this verifier succeeds.
+    /// Configures an optional host-owned verifier for external tool receipts.
+    /// Once installed, every subsequent feedback outcome must pass it.
     pub fn setFeedbackVerifier(self: *Runtime, verifier: model.FeedbackVerifier) void {
         self.feedback_verifier = verifier;
     }
 
     pub fn clearFeedbackVerifier(self: *Runtime) void {
         self.feedback_verifier = null;
+    }
+
+    /// Installs an Ed25519 verification policy for feedback attestations. The
+    /// policy is deployment configuration and must be reinstalled after recover.
+    pub fn setFeedbackAttestationPolicy(self: *Runtime, policy: model.FeedbackAttestationPolicy) !void {
+        if (policy.issuers.len == 0 or policy.issuers.len > 64) return error.InvalidAttestationPolicy;
+        for (policy.issuers, 0..) |issuer, index| {
+            if (issuer.issuer.len == 0 or issuer.key_id.len == 0) return error.InvalidAttestationPolicy;
+            for (policy.issuers[index + 1 ..]) |other| if (std.mem.eql(u8, issuer.issuer, other.issuer) and std.mem.eql(u8, issuer.key_id, other.key_id)) return error.InvalidAttestationPolicy;
+        }
+        self.feedback_attestation_policy = policy;
+    }
+
+    pub fn clearFeedbackAttestationPolicy(self: *Runtime) void {
+        self.feedback_attestation_policy = null;
     }
 
     /// Installs the host-owned verifier required for externally requested
@@ -426,17 +441,58 @@ pub const Runtime = struct {
         if (rule.adjustment) |adjustment| _ = try self.applyTransition(.{ .target = target, .kind = adjustment, .amount = rule.amount, .cause = cause, .reason = "verified feedback plasticity", .actor = input.actor, .receipt = input.receipt, .timestamp = input.timestamp });
     }
 
-    /// Applies a verified external result. Verification happens before any
-    /// node, relation, clock, confidence, or audit-record mutation; later
-    /// allocation failures restore the complete pre-feedback runtime state.
+    /// Returns the canonical public payload that a trusted host signs. The
+    /// payload deliberately binds feedback fields to the target's semantics.
+    pub fn feedbackAttestationPayload(self: *const Runtime, input: model.FeedbackInput, target: *const model.Node, attestation: model.FeedbackAttestation) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "MEML-FEEDBACK-ATTEST-1\nissuer={d}:{s}\nkey_id={d}:{s}\nnonce={d}:{s}\nissued_at={d}\nexpires_at={d}\ntarget={d}\noutcome={s}\nfailure_class={s}\ntimestamp={d}\nactor={d}:{s}\nreceipt={d}:{s}\nnode_kind={s}\nsubject={d}:{s}\npredicate={d}:{s}\nobject={d}:{s}\ncontext={d}:{s}\nresult={d}:{s}\n", .{
+            attestation.issuer.len, attestation.issuer,     attestation.key_id.len, attestation.key_id,      attestation.nonce.len,         attestation.nonce,
+            attestation.issued_at,  attestation.expires_at, input.target,           @tagName(input.outcome), @tagName(input.failure_class), input.timestamp,
+            input.actor.len,        input.actor,            input.receipt.len,      input.receipt,           @tagName(target.kind),         target.subject.len,
+            target.subject,         target.predicate.len,   target.predicate,       target.object.len,       target.object,                 target.context.len,
+            target.context,         target.result.len,      target.result,
+        });
+    }
+
+    fn verifyFeedbackAttestation(self: *const Runtime, input: model.FeedbackInput, target: *const model.Node) !?model.AttestationReplayRecord {
+        const policy = self.feedback_attestation_policy orelse return null;
+        const attestation = input.attestation orelse return error.AttestationRequired;
+        if (attestation.issuer.len == 0 or attestation.key_id.len == 0 or attestation.nonce.len == 0 or attestation.nonce.len > 256 or !std.mem.eql(u8, attestation.issuer, input.actor)) return error.InvalidAttestation;
+        if (attestation.issued_at > attestation.expires_at or input.timestamp < attestation.issued_at or input.timestamp > attestation.expires_at or self.clock > attestation.expires_at) return error.ExpiredAttestation;
+        var issuer: ?model.FeedbackAttestationIssuer = null;
+        for (policy.issuers) |candidate| if (std.mem.eql(u8, candidate.issuer, attestation.issuer) and std.mem.eql(u8, candidate.key_id, attestation.key_id)) {
+            issuer = candidate;
+            break;
+        };
+        const trusted = issuer orelse return error.UntrustedAttestationIssuer;
+        const payload = try self.feedbackAttestationPayload(input, target, attestation);
+        defer self.allocator.free(payload);
+        const public_key = std.crypto.sign.Ed25519.PublicKey.fromBytes(trusted.public_key) catch return error.InvalidAttestationKey;
+        const signature = std.crypto.sign.Ed25519.Signature.fromBytes(attestation.signature);
+        signature.verifyStrict(payload, public_key) catch return error.InvalidAttestationSignature;
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(payload, &digest, .{});
+        if (self.store.hasAttestationReplay(digest)) return error.ReplayedAttestation;
+        return .{ .digest = digest, .expires_at = attestation.expires_at };
+    }
+
+    /// Applies an external result. Feedback is writable by default; installing
+    /// a legacy verifier or an Ed25519 attestation policy explicitly upgrades
+    /// this operation to require that configured proof before semantic mutation.
     pub fn recordFeedback(self: *Runtime, input: model.FeedbackInput) !u64 {
-        const verifier = self.feedback_verifier orelse return error.FeedbackVerifierRequired;
         const target = self.store.constNode(input.target) orelse return error.UnknownNode;
         if (target.kind == .evidence) return error.InvalidFeedbackTarget;
         if (input.actor.len == 0 or input.receipt.len == 0 or (input.outcome == .success and input.failure_class != .none) or (input.outcome == .failure and input.failure_class == .none)) return error.InvalidFeedback;
-        try verifier.verify(input);
+        if (self.feedback_verifier) |verifier| try verifier.verify(input);
+        const replay = try self.verifyFeedbackAttestation(input, target);
         var transaction = try self.beginTransaction();
         defer transaction.deinit();
+        if (replay) |replay_record| {
+            self.store.pruneExpiredAttestationReplays(input.timestamp);
+            self.store.recordAttestationReplay(replay_record) catch |err| {
+                transaction.rollback() catch |rollback_err| return rollback_err;
+                return err;
+            };
+        }
         const evidence = self.applyFeedback(input) catch |err| {
             transaction.rollback() catch |rollback_err| return rollback_err;
             return err;
@@ -1151,17 +1207,21 @@ pub const Runtime = struct {
         const revision = try provider.persistIfRevision(&self.store, self.next_id, self.clock, expected_revision, io, self.allocator, path);
         self.revision = revision;
     }
-    pub fn recover(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Runtime {
-        try persistence.recoverJournal(io, allocator, path);
-        const loaded = try persistence.load(allocator, io, path);
+    fn recoverLoaded(allocator: std.mem.Allocator, loaded: persistence.Loaded, index_checkpoint_revision: u64) !Runtime {
+        var owned = loaded;
+        var transferred = false;
+        errdefer if (!transferred) owned.store.deinit();
+        try owned.store.validate();
         var runtime = Runtime.init(allocator);
         errdefer runtime.deinit();
-        runtime.store = loaded.store;
-        runtime.next_id = loaded.next_id;
+        runtime.store.deinit();
+        runtime.store = owned.store;
+        transferred = true;
+        runtime.next_id = owned.next_id;
         for (runtime.store.transition_records.items) |transition_record| runtime.next_transition_id = @max(runtime.next_transition_id, transition_record.id + 1);
-        runtime.clock = loaded.clock;
-        runtime.revision = loaded.revision;
-        if (try index_journal.recover(&runtime.store, runtime.revision, io, allocator, path)) runtime.index_checkpoint_revision = runtime.revision;
+        runtime.clock = owned.clock;
+        runtime.revision = owned.revision;
+        runtime.index_checkpoint_revision = index_checkpoint_revision;
         if (runtime.store.fingerprint_groups.items.len > 0) {
             for (runtime.store.fingerprint_groups.items) |group| try runtime.experience_groups.put(group.fingerprint, group.count);
         } else {
@@ -1176,5 +1236,20 @@ pub const Runtime = struct {
         }
         try runtime.backend.reset(&runtime.store);
         return runtime;
+    }
+
+    pub fn recover(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Runtime {
+        try persistence.recoverJournal(io, allocator, path);
+        var loaded = try persistence.load(allocator, io, path);
+        const checkpoint_revision = if (try index_journal.recover(&loaded.store, loaded.revision, io, allocator, path)) loaded.revision else 0;
+        return recoverLoaded(allocator, loaded, checkpoint_revision);
+    }
+
+    /// Recovers a semantic snapshot supplied by a host-owned CAS provider.
+    /// Remote providers never transfer derived indexes; rebuilding them avoids
+    /// cross-revision shard inconsistency after a successful CAS commit.
+    pub fn recoverFrom(allocator: std.mem.Allocator, provider: storage_mod.VersionedProvider, io: std.Io, path: []const u8) !Runtime {
+        const loaded = try provider.recover(allocator, io, path);
+        return recoverLoaded(allocator, loaded, 0);
     }
 };

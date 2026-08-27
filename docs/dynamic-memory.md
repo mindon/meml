@@ -24,7 +24,7 @@ MEML 不决定宿主的行动、不执行工具，也不建立通用脚本执行
 - `penalize` / `decay`：按有界比例降低 confidence 与 strength；
 - `stabilize`：回到 `active` 并增强 strength。
 
-每次提交生成不可变 `TransitionRecord`，包含前后状态、cause、reason、actor、receipt、时间和单调审计 ID。`verifyTransitionHistory()` 验证每个目标的转移链连续性；`MEML14` 会完整持久化这些记录。旧状态格式明确返回 `UnsupportedVersion`。
+每次提交生成不可变 `TransitionRecord`，包含前后状态、cause、reason、actor、receipt、时间和单调审计 ID。`verifyTransitionHistory()` 验证每个目标的转移链连续性；`MEML15` 会完整持久化这些记录。旧状态格式明确返回 `UnsupportedVersion`。
 
 ```zig
 runtime.setTransitionVerifier(host_verifier);
@@ -46,7 +46,7 @@ _ = try runtime.transition(.{
 
 ## 可配置可塑性
 
-`PlasticityPolicy` 将已验证 feedback 映射为有限状态变化：每个 outcome 或 failure class 最多设置一个生命周期状态，并执行一次 `reinforce`、`penalize`、`decay` 或 `stabilize`。策略是宿主运行时配置，不会写入 `MEML14`，从而不把部署授权或环境规则混入记忆状态。每次实际变化仍生成 `TransitionRecord`。
+`PlasticityPolicy` 将已验证 feedback 映射为有限状态变化：每个 outcome 或 failure class 最多设置一个生命周期状态，并执行一次 `reinforce`、`penalize`、`decay` 或 `stabilize`。策略是宿主运行时配置，不会写入 `MEML15`，从而不把部署授权或环境规则混入记忆状态。每次实际变化仍生成 `TransitionRecord`。
 
 ## 离散稳定性与吸引子
 
@@ -124,7 +124,7 @@ DSL 没有循环、函数、网络或工具调用；它只可提交上述有限�
 1. 无 verifier 的转移不得改变状态；
 2. 经验证 transition 后，激活集合或排序必须按状态策略发生可解释变化；
 3. 每项变化可追溯到 transition、cause 和 receipt；
-4. `MEML14` 恢复后审计序列、节点状态和激活结果保持一致；
+4. `MEML15` 恢复后审计序列、节点状态和激活结果保持一致；
 5. 过程预测只能使用 cutoff 之前的 feedback，并以 hold-out accuracy 与 Brier score 报告校准质量；
 6. selection 仅比较显式候选集合，拒绝项不得拥有排名；
 7. 多目标比较必须由调用方显式传入 candidate 与目标；未传入候选、目标方向不匹配、metric 缺失或硬约束不满足时不得产生 rank；
