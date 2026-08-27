@@ -28,7 +28,9 @@ jobs:
           echo "Resolved Zig $ZIG_VERSION"
           curl -fsSL "$ZIG_URL" -o zig.tar.xz
           tar -xJf zig.tar.xz
-          sudo ln -sf "$PWD/zig-$ZIG_VERSION/zig" /usr/local/bin/zig
+          echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
+          export PATH=$PATH:$HOME/.local/bin
+          ln -sf "$PWD/zig-$ZIG_VERSION/zig" $HOME/.local/bin/zig"
           zig version
       - run: zig build test
 
