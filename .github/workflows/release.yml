@@ -25,11 +25,12 @@ jobs:
           ZIG_JSON=$(curl -fsSL https://ziglang.org/download/index.json)
           ZIG_VERSION=$(echo "$ZIG_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["master"]["version"])')
           ZIG_URL=$(echo "$ZIG_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["master"]["x86_64-linux"]["tarball"])')
+          ZIG_DIR="$RUNNER_TEMP/zig"
           echo "Resolved Zig $ZIG_VERSION"
-          curl -fsSL "$ZIG_URL" -o zig.tar.xz
-          tar -xJf zig.tar.xz
-          echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
-          "$PWD/zig-$ZIG_VERSION/zig" version
+          curl -fsSL "$ZIG_URL" -o "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p "$ZIG_DIR"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" --strip-components=1 -C "$ZIG_DIR"
+          echo "$ZIG_DIR" >> "$GITHUB_PATH"
       - run: zig build test
 
   build:
@@ -62,12 +63,12 @@ jobs:
           ZIG_JSON=$(curl -fsSL https://ziglang.org/download/index.json)
           ZIG_VERSION=$(echo "$ZIG_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["master"]["version"])')
           ZIG_URL=$(echo "$ZIG_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["master"]["x86_64-linux"]["tarball"])')
+          ZIG_DIR="$RUNNER_TEMP/zig"
           echo "Resolved Zig $ZIG_VERSION"
-          curl -fsSL "$ZIG_URL" -o zig.tar.xz
-          tar -xJf zig.tar.xz
-          echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
-          export PATH=$PATH:$PWD/zig-$ZIG_VERSION/zig
-          "$PWD/zig-$ZIG_VERSION/zig" version
+          curl -fsSL "$ZIG_URL" -o "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p "$ZIG_DIR"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" --strip-components=1 -C "$ZIG_DIR"
+          echo "$ZIG_DIR" >> "$GITHUB_PATH"
       - name: Build release binary
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
       - name: Package meml
