@@ -28,7 +28,8 @@ jobs:
           echo "Resolved Zig $ZIG_VERSION"
           curl -fsSL "$ZIG_URL" -o zig.tar.xz
           tar -xJf zig.tar.xz
-          echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
+          sudo ln -sf "$PWD/zig-$ZIG_VERSION/zig" /usr/local/bin/zig
+          zig version
       - run: zig build test
 
   build:
@@ -65,6 +66,8 @@ jobs:
           curl -fsSL "$ZIG_URL" -o zig.tar.xz
           tar -xJf zig.tar.xz
           echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
+          ln -sf "$PWD/zig-$ZIG_VERSION/zig" $HOME/.local/bin/zig
+          zig version
       - name: Build release binary
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
       - name: Package meml
