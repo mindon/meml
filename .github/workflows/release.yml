@@ -30,7 +30,7 @@ jobs:
           tar -xJf zig.tar.xz
           echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
           export PATH=$PATH:$HOME/.local/bin
-          ln -sf "$PWD/zig-$ZIG_VERSION/zig" $HOME/.local/bin/zig"
+          ln -sf "$PWD/zig-$ZIG_VERSION/zig" $HOME/.local/bin/zig
           zig version
       - run: zig build test
 
@@ -69,7 +69,7 @@ jobs:
           tar -xJf zig.tar.xz
           echo "$PWD/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
           export PATH=$PATH:$HOME/.local/bin
-          ln -sf "$PWD/zig-$ZIG_VERSION/zig" $HOME/.local/bin/zig"
+          ln -sf "$PWD/zig-$ZIG_VERSION/zig" $HOME/.local/bin/zig
           zig version
       - name: Build release binary
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
