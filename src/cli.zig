@@ -11,14 +11,16 @@ const Allocator = std.mem.Allocator;
 const State = struct {
     allocator: Allocator,
     io: std.Io,
+    environ: std.process.Environ,
     runtime: meml.Runtime,
     trusted_actors: std.ArrayList([]const u8),
     receipt_prefix: []const u8 = "",
 
-    fn init(allocator: Allocator, io: std.Io) State {
+    fn init(allocator: Allocator, io: std.Io, environ: std.process.Environ) State {
         return .{
             .allocator = allocator,
             .io = io,
+            .environ = environ,
             .runtime = meml.Runtime.init(allocator),
             .trusted_actors = .empty,
         };
@@ -96,6 +98,22 @@ fn fObject(o: ObjectMap, key: []const u8) ?ObjectMap {
         .object => |map| map,
         else => null,
     };
+}
+
+fn defaultStatePath(environ: std.process.Environ, allocator: Allocator) ![]const u8 {
+    const home = std.process.Environ.getAlloc(environ, allocator, "HOME") catch return error.HomeDirectoryUnavailable;
+    return std.fmt.allocPrint(allocator, "{s}/.meml/state/memory.state", .{home});
+}
+
+fn requestedStatePath(environ: std.process.Environ, o: ObjectMap, allocator: Allocator) ![]const u8 {
+    const explicit = fOptStr(o, "path");
+    return if (explicit.len > 0) explicit else defaultStatePath(environ, allocator);
+}
+
+fn ensureParentDirectory(io: std.Io, path: []const u8) !void {
+    const separator = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+    if (separator == 0) return;
+    try std.Io.Dir.cwd().createDirPath(io, path[0..separator]);
 }
 
 fn requiredF64(o: ObjectMap, key: []const u8) !f64 {
@@ -664,8 +682,8 @@ fn cmdBackend(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer)
 }
 
 fn cmdPersist(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
-    const path = fOptStr(o, "path");
-    if (path.len == 0) return error.MissingPath;
+    const path = try requestedStatePath(state.environ, o, a);
+    try ensureParentDirectory(state.io, path);
     if (fBool(o, "atomic", false)) {
         try state.runtime.persistAtomic(state.io, path);
     } else {
@@ -675,18 +693,56 @@ fn cmdPersist(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer)
 }
 
 fn cmdRecover(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
-    const path = fOptStr(o, "path");
-    if (path.len == 0) return error.MissingPath;
+    const path = try requestedStatePath(state.environ, o, a);
     const fresh = try meml.Runtime.recover(state.allocator, state.io, path);
     state.runtime.deinit();
     state.runtime = fresh;
     try writeValue(writer, .{ .object = okObject(a) });
 }
 
+fn isSafeImportPath(path: []const u8) bool {
+    if (path.len == 0 or std.fs.path.isAbsolute(path) or !std.mem.endsWith(u8, path, ".meml")) return false;
+    var components = std.mem.tokenizeScalar(u8, path, '/');
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return false;
+    }
+    return true;
+}
+
+fn cmdImportMeml(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const files = fArray(o, "files") orelse return error.MissingImportFiles;
+    if (files.items.len == 0 or files.items.len > 64) return error.InvalidImportFiles;
+
+    var documents = std.ArrayList(meml.source.ImportDocument).empty;
+    defer documents.deinit(a);
+    var total_bytes: usize = 0;
+    for (files.items) |value| {
+        const path = switch (value) {
+            .string => |text| text,
+            else => return error.InvalidImportFiles,
+        };
+        if (!isSafeImportPath(path)) return error.UnsafeImportPath;
+        const source = try std.Io.Dir.cwd().readFileAlloc(state.io, path, a, .limited(512 * 1024));
+        total_bytes = std.math.add(usize, total_bytes, source.len) catch return error.ImportTooLarge;
+        if (total_bytes > 4 * 1024 * 1024) return error.ImportTooLarge;
+        try documents.append(a, .{ .name = path, .input = source });
+    }
+
+    const report = try meml.source.importDocuments(&state.runtime, documents.items, a);
+    var resp = ObjectMap.empty;
+    try resp.put(a, "ok", .{ .bool = true });
+    try resp.put(a, "documents", .{ .integer = @intCast(report.documents) });
+    try resp.put(a, "observed", .{ .integer = @intCast(report.observed) });
+    try resp.put(a, "asserted", .{ .integer = @intCast(report.asserted) });
+    try resp.put(a, "links", .{ .integer = @intCast(report.links) });
+    try writeValue(writer, .{ .object = resp });
+}
+
 fn cmdExec(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
     const program = fOptStr(o, "program");
     if (program.len == 0) return error.MissingProgram;
-    const report = try meml.source.execute(&state.runtime, program, a);
+    var report = try meml.source.execute(&state.runtime, program, a);
+    defer report.deinit(a);
 
     var resp = ObjectMap.empty;
     try resp.put(a, "ok", .{ .bool = true });
@@ -844,6 +900,7 @@ fn dispatch(state: *State, op: []const u8, o: ObjectMap, a: Allocator, writer: *
     if (std.mem.eql(u8, op, "backend")) return cmdBackend(state, o, a, writer);
     if (std.mem.eql(u8, op, "persist")) return cmdPersist(state, o, a, writer);
     if (std.mem.eql(u8, op, "recover")) return cmdRecover(state, o, a, writer);
+    if (std.mem.eql(u8, op, "import_meml")) return cmdImportMeml(state, o, a, writer);
     if (std.mem.eql(u8, op, "exec")) return cmdExec(state, o, a, writer);
     if (std.mem.eql(u8, op, "set_verifier")) return cmdSetVerifier(state, o, a, writer);
     if (std.mem.eql(u8, op, "clear_verifier")) return cmdClearVerifier(state, o, a, writer);
@@ -926,7 +983,7 @@ const help_text =
     \\
     \\Ops: ping observe assert remember infer link unlink support contradict
     \\     transition supersede generalize procedure predict_procedure select_procedures compare_procedures activate feedback
-    \\     consolidate auto_consolidate signals backend persist recover exec
+    \\     consolidate auto_consolidate signals backend persist recover import_meml exec
     \\     set_verifier clear_verifier set_plasticity_policy
     \\
 ;
@@ -945,7 +1002,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     _ = args.next(); // skip program name
     const first = args.next();
 
-    var state = State.init(allocator, io);
+    var state = State.init(allocator, io, minimal.environ);
     defer state.deinit();
 
     var out_file = std.Io.File.stdout().writer(io, &.{});

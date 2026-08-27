@@ -12,6 +12,6 @@ default_tools_approval_mode = "approve"
 
 [mcp_servers.meml.env]
 MEML_BIN = "/ABSOLUTE/PATH/TO/meml/zig-out/bin/meml"
-MEML_STATE_PATH = ".meml/codex.state"
+MEML_STATE_PATH = "${HOME}/.meml/state/codex.state"
 MEML_ACTOR = "codex"
 MEML_RECEIPT_PREFIX = "codex-verified-"

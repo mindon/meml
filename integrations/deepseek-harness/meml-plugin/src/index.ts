@@ -1,4 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
+import { homedir } from "node:os";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { MemlClient } from "../../../meml-client.ts";
 
@@ -7,7 +8,7 @@ export const inject = ["tools"];
 
 export function apply(ctx: Context): void {
   const client = new MemlClient({
-    statePath: process.env.MEML_STATE_PATH ?? ".meml/deepseek-harness.state",
+    statePath: process.env.MEML_STATE_PATH ?? `${homedir()}/.meml/state/deepseek-harness.state`,
     actor: "deepseek-harness",
     receiptPrefix: "dsh-verified-",
   });

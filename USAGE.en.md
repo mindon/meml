@@ -316,8 +316,9 @@ Response format: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 | `auto_consolidate` | `enable,…` | `{ok}` |
 | `signals` | `providers` | `{ok,providers}` |
 | `backend` | `backend` | `{ok}` |
-| `persist` | `path,atomic` | `{ok}` |
-| `recover` | `path` | `{ok}` |
+| `persist` | `path?,atomic` | `{ok}`; defaults to `~/.meml/state/memory.state` when `path` is omitted |
+| `recover` | `path?` | `{ok}`; defaults to `~/.meml/state/memory.state` when `path` is omitted |
+| `import_meml` | `files` | `{ok,documents,observed,asserted,links}`; atomically imports multiple restricted `.meml` files |
 | `exec` | `program` | `{ok,stats}` |
 | `set_verifier` | `trusted_actors,receipt_prefix` | `{ok}` |
 | `clear_verifier` | — | `{ok}` |
@@ -332,7 +333,18 @@ Enum values:
 - `backend`: `vector | graph`
 - `providers` (array): `metadata | embedding | reranker | calibrated | neural`
 
-### 3.3 Shell example
+### 3.3 Multi-source memory import and default storage
+
+`import_meml` reads relative `.meml` files below the current working directory in `files` order and imports the entire batch as one in-memory transaction. It is not a `MEML14` snapshot merge: each document has an isolated label scope and may contain only `observe`, `assert`, and `link` statements that reference labels in the same document. `feedback`, `transition`, `unlink`, `signals`, `consolidate`, and retrieval statements are rejected. Paths must not be absolute or contain `.` / `..` components; the limits are 512 KiB per file, 4 MiB per batch, and 64 files. Importing does not persist automatically; call `persist` explicitly after success.
+
+```jsonl
+{"op":"import_meml","files":["examples/import-preferences.meml","examples/import-history.meml"]}
+{"op":"persist","atomic":true}
+```
+
+When no `path` is supplied, both `persist` and `recover` use `~/.meml/state/memory.state`; `persist` creates the parent directory. Integrations should prefer `MEML_STATE_PATH` and use distinct Agent filenames (such as `codebuddy.state`) to avoid accidental cross-host state sharing.
+
+### 3.4 Shell example
 
 ```sh
 # Long-running mode: state persists across requests
@@ -346,7 +358,7 @@ printf '%s\n' \
 | ./zig-out/bin/meml
 ```
 
-### 3.4 Python long-running process example (agent integration)
+### 3.5 Python long-running process example (agent integration)
 
 ```python
 import subprocess, json

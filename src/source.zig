@@ -288,6 +288,57 @@ pub fn compile(input: []const u8, allocator: std.mem.Allocator) Compilation {
     return .{ .program = program };
 }
 
+pub const ImportDocument = struct {
+    name: []const u8,
+    input: []const u8,
+};
+
+pub const ImportReport = struct {
+    documents: usize = 0,
+    observed: usize = 0,
+    asserted: usize = 0,
+    links: usize = 0,
+};
+
+/// Imports semantic source documents as one atomic batch. This deliberately
+/// accepts only additive observe/assert/link statements; it never merges state
+/// snapshots or executes feedback, transitions, consolidation, or retrieval.
+pub fn importDocuments(runtime: *runtime_mod.Runtime, documents: []const ImportDocument, allocator: std.mem.Allocator) !ImportReport {
+    if (documents.len == 0) return error.EmptyImport;
+
+    var programs = std.ArrayList(Program).empty;
+    defer {
+        for (programs.items) |*program| program.deinit(allocator);
+        programs.deinit(allocator);
+    }
+    for (documents) |document| {
+        if (document.name.len == 0) return error.InvalidImportDocument;
+        const compilation = compile(document.input, allocator);
+        var program = switch (compilation) {
+            .program => |program| program,
+            .diagnostic => |diagnostic| return switch (diagnostic.phase) {
+                .parse => error.ParseFailed,
+                .validation => error.ValidationFailed,
+            },
+        };
+        checkMemoryImport(&program, allocator) catch |err| {
+            program.deinit(allocator);
+            return err;
+        };
+        try programs.append(allocator, program);
+    }
+
+    var transaction = try runtime.beginTransaction();
+    defer transaction.deinit();
+    errdefer transaction.rollback() catch {};
+    var report = ImportReport{ .documents = documents.len };
+    for (programs.items) |*program| {
+        try executeMemoryProgram(runtime, program, &report, allocator);
+    }
+    transaction.commit();
+    return report;
+}
+
 pub fn execute(runtime: *runtime_mod.Runtime, input: []const u8, allocator: std.mem.Allocator) !ExecutionReport {
     const compilation = compile(input, allocator);
     var program = switch (compilation) {
@@ -301,13 +352,42 @@ pub fn execute(runtime: *runtime_mod.Runtime, input: []const u8, allocator: std.
     var transaction = try runtime.beginTransaction();
     defer transaction.deinit();
     errdefer transaction.rollback() catch {};
+    const report = try executeProgram(runtime, &program, allocator);
+    transaction.commit();
+    return report;
+}
+
+fn executeMemoryProgram(runtime: *runtime_mod.Runtime, program: *const Program, report: *ImportReport, allocator: std.mem.Allocator) !void {
+    var labels = std.StringHashMap(u64).init(allocator);
+    defer labels.deinit();
+    for (program.statements.items) |located| switch (located.statement) {
+        .observe => |entry| {
+            const id = try runtime.observe(entry.subject, entry.predicate, entry.object, entry.context, entry.result, entry.timestamp);
+            if (entry.label) |label| try labels.put(label, id);
+            report.observed += 1;
+        },
+        .claim => |entry| {
+            const id = try runtime.assert(entry.subject, entry.predicate, entry.object, entry.context, entry.confidence);
+            if (entry.label) |label| try labels.put(label, id);
+            report.asserted += 1;
+        },
+        .link => |link| {
+            try runtime.link(labels.get(link.from) orelse return error.UnknownLabel, link.kind, labels.get(link.to) orelse return error.UnknownLabel, link.weight);
+            report.links += 1;
+        },
+        else => return error.MemoryImportOnly,
+    };
+}
+
+fn executeProgram(runtime: *runtime_mod.Runtime, program: *const Program, allocator: std.mem.Allocator) !ExecutionReport {
     var contexts = std.StringHashMap(model.Context).init(allocator);
     defer contexts.deinit();
     var labels = std.StringHashMap(u64).init(allocator);
     defer labels.deinit();
     var report = ExecutionReport.init();
+    errdefer report.deinit(allocator);
     for (program.statements.items) |located| {
-        const step: anyerror!void = switch (located.statement) {
+        switch (located.statement) {
             .context => |decl| try contexts.put(decl.name, decl.value),
             .observe => |entry| {
                 const id = try runtime.observe(entry.subject, entry.predicate, entry.object, entry.context, entry.result, entry.timestamp);
@@ -340,16 +420,23 @@ pub fn execute(runtime: *runtime_mod.Runtime, input: []const u8, allocator: std.
                 const context = contexts.get(command.context_name) orelse return error.UnknownContext;
                 try report.activations.append(allocator, try runtime.activate(context, command.limit, allocator));
             },
-        };
-        step catch |err| {
-            report.deinit(allocator);
-            transaction.rollback() catch |rollback_err| return rollback_err;
-            transaction.commit();
-            return err;
-        };
+        }
     }
-    transaction.commit();
     return report;
+}
+
+fn checkMemoryImport(program: *Program, allocator: std.mem.Allocator) !void {
+    var labels = std.StringHashMap(void).init(allocator);
+    defer labels.deinit();
+    for (program.statements.items) |located| {
+        program.validation_span = located.span;
+        switch (located.statement) {
+            .observe => |entry| if (entry.label) |label| try registerLabel(&labels, label),
+            .claim => |entry| if (entry.label) |label| try registerLabel(&labels, label),
+            .link => |link| if (!labels.contains(link.from) or !labels.contains(link.to)) return error.InvalidLink,
+            else => return error.MemoryImportOnly,
+        }
+    }
 }
 
 /// Static validation prevents malformed source, unsafe bounds and lifecycle

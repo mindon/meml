@@ -6,7 +6,7 @@
       "args": ["${CODEBUDDY_PLUGIN_ROOT}/scripts/meml-mcp.mjs"],
       "env": {
         "MEML_BIN": "meml",
-        "MEML_STATE_PATH": ".meml/codebuddy.state",
+        "MEML_STATE_PATH": "${HOME}/.meml/state/codebuddy.state",
         "MEML_ACTOR": "codebuddy",
         "MEML_RECEIPT_PREFIX": "codebuddy-verified-"
       }

@@ -318,8 +318,9 @@ meml.neural.retrievalProvider()
 | `auto_consolidate` | `enable,…` | `{ok}` |
 | `signals` | `providers` | `{ok,providers}` |
 | `backend` | `backend` | `{ok}` |
-| `persist` | `path,atomic` | `{ok}` |
-| `recover` | `path` | `{ok}` |
+| `persist` | `path?,atomic` | `{ok}`；未给 `path` 时使用 `~/.meml/state/memory.state` |
+| `recover` | `path?` | `{ok}`；未给 `path` 时使用 `~/.meml/state/memory.state` |
+| `import_meml` | `files` | `{ok,documents,observed,asserted,links}`；原子导入多个受限 `.meml` 文件 |
 | `exec` | `program` | `{ok,统计}` |
 | `set_verifier` | `trusted_actors,receipt_prefix` | `{ok}` |
 | `clear_verifier` | — | `{ok}` |
@@ -334,7 +335,18 @@ meml.neural.retrievalProvider()
 - `backend`：`vector | graph`
 - `providers`（数组）：`metadata | embedding | reranker | calibrated | neural`
 
-### 3.3 Shell 示例
+### 3.3 多源记忆导入与默认存储
+
+`import_meml` 会按 `files` 数组顺序读取当前工作目录下的相对 `.meml` 文件，并将整批语义记录作为一次内存事务导入。它不是 `MEML14` 快照合并：每份文件都有独立标签作用域，只允许 `observe`、`assert` 与引用本文件标签的 `link`；`feedback`、`transition`、`unlink`、`signals`、`consolidate` 与检索语句会被拒绝。路径不得为绝对路径或包含 `.` / `..` 段，单文件上限 512 KiB、整批上限 4 MiB、最多 64 个文件。导入不自动持久化，成功后应显式调用 `persist`。
+
+```jsonl
+{"op":"import_meml","files":["examples/import-preferences.meml","examples/import-history.meml"]}
+{"op":"persist","atomic":true}
+```
+
+`persist` 和 `recover` 未提供 `path` 时都使用 `~/.meml/state/memory.state`；`persist` 会创建该父目录。集成应优先使用 `MEML_STATE_PATH`，并按 Agent 使用不同文件名（例如 `codebuddy.state`），避免不同宿主误共享状态。
+
+### 3.4 Shell 示例
 
 ```sh
 # 常驻模式：状态跨请求保留
@@ -348,7 +360,7 @@ printf '%s\n' \
 | ./zig-out/bin/meml
 ```
 
-### 3.4 Python 常驻进程示例（agent 集成）
+### 3.5 Python 常驻进程示例（agent 集成）
 
 ```python
 import subprocess, json

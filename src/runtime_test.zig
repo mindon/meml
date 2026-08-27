@@ -1093,6 +1093,37 @@ test "source labels links and diagnostics are validated before execution" {
     try std.testing.expectEqual(@as(usize, 2), runtime.store.nodes.items.len);
 }
 
+test "memory imports replay multiple documents atomically without snapshot merging" {
+    const documents = [_]meml.source.ImportDocument{
+        .{ .name = "preferences.meml", .input = "observe user prefers zig systems success at 10 as preference\nassert user trusts zig systems confidence 0.9 as belief\nlink belief supports preference weight 0.8\n" },
+        .{ .name = "history.meml", .input = "observe user uses typescript frontend success at 20\n" },
+    };
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+
+    const report = try meml.source.importDocuments(&runtime, &documents, std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), report.documents);
+    try std.testing.expectEqual(@as(usize, 2), report.observed);
+    try std.testing.expectEqual(@as(usize, 1), report.asserted);
+    try std.testing.expectEqual(@as(usize, 1), report.links);
+    try std.testing.expectEqual(@as(usize, 3), runtime.store.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 1), runtime.store.relations.items.len);
+
+    const invalid_documents = [_]meml.source.ImportDocument{
+        .{ .name = "valid.meml", .input = "observe user uses python backend success at 30\n" },
+        .{ .name = "not-memory-only.meml", .input = "consolidate\n" },
+    };
+    try std.testing.expectError(error.MemoryImportOnly, meml.source.importDocuments(&runtime, &invalid_documents, std.testing.allocator));
+    try std.testing.expectEqual(@as(usize, 3), runtime.store.nodes.items.len);
+
+    const cross_document_label = [_]meml.source.ImportDocument{
+        .{ .name = "first.meml", .input = "observe user uses go backend success at 40 as go_use\n" },
+        .{ .name = "second.meml", .input = "assert user trusts go backend confidence 0.8 as go_belief\nlink go_belief supports go_use\n" },
+    };
+    try std.testing.expectError(error.ValidationFailed, meml.source.importDocuments(&runtime, &cross_document_label, std.testing.allocator));
+    try std.testing.expectEqual(@as(usize, 3), runtime.store.nodes.items.len);
+}
+
 test "source unlink removes explicit relation with precise lifecycle validation" {
     const input =
         \\assert agent uses browser-tool browser confidence 0.8 as strategy

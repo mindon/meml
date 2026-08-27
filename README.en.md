@@ -13,6 +13,7 @@ Semantics and ranking are controlled by a single kernel; indexes, external signa
 - Keep policy outcomes for tool selection, workflow planning, and failure recovery: execution success or failure is written back as evidence and biases later retrieval by source.
 - Consolidate repeated experience into traceable long-term memory, beliefs, concepts, and procedures.
 - Save, restore, and audit memory state and derivation provenance locally.
+- Import multiple restricted `.meml` semantic documents in one atomic transaction instead of merging state snapshots.
 - Reproduce retrieval evaluations across different candidate-routing or signal providers.
 
 ## Key Benefits

@@ -1,0 +1,4 @@
+# Importable semantic memory: labels are scoped to this file.
+observe user prefers zig systems success at 10 as preferred_language
+assert user trusts zig systems confidence 0.9 as language_belief
+link language_belief supports preferred_language weight 0.8

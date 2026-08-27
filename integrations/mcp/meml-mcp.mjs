@@ -1,13 +1,14 @@
 import { access, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import readline from "node:readline";
 
 const MAX_REQUEST_BYTES = 60 * 1024;
 const actor = process.env.MEML_ACTOR ?? "mcp-host";
 const receiptPrefix = process.env.MEML_RECEIPT_PREFIX ?? "mcp-verified-";
 const binary = process.env.MEML_BIN ?? "meml";
-const statePath = resolve(process.env.MEML_STATE_PATH ?? ".meml/mcp.state");
+const statePath = resolve(process.env.MEML_STATE_PATH ?? `${homedir()}/.meml/state/mcp.state`);
 
 class MemlBridge {
   process;

@@ -27,7 +27,7 @@ export MEML_BIN="$PWD/zig-out/bin/meml"
 /Users/mindon/dev/playground/meml/integrations/pi/meml-plugin/src/index.ts
 ```
 
-Pi 会注册只读的 `meml_recall`。会话结束时扩展自动整合并原子保存 `.meml/pi.state`。该插件通过相对路径复用 `integrations/meml-client.ts`，如需迁移目录，应一并迁移整个 `integrations/` 目录或同步调整该导入。
+Pi 会注册只读的 `meml_recall`。会话结束时扩展自动整合并原子保存 `~/.meml/state/pi.state`；`MEML_STATE_PATH` 可覆盖该位置。该插件通过相对路径复用 `integrations/meml-client.ts`，如需迁移目录，应一并迁移整个 `integrations/` 目录或同步调整该导入。
 
 安装 Skill：将 `integrations/skills/meml-agent-memory/` 复制到 `.pi/skills/meml-agent-memory/`，或在 `.pi/settings.json` 中将该目录加入 `skills`。
 
@@ -39,7 +39,7 @@ Pi 会注册只读的 `meml_recall`。会话结束时扩展自动整合并原子
 pnpm dsh web --patch /Users/mindon/dev/playground/meml/integrations/deepseek-harness/meml-plugin/cordis.yml
 ```
 
-插件依据 `ctx.tools.register(defineTool(...))` 注册只读 `meml_recall`，并借助 `ctx.effect()` 在卸载时整合和原子保存 `.meml/deepseek-harness.state`。
+插件依据 `ctx.tools.register(defineTool(...))` 注册只读 `meml_recall`，并借助 `ctx.effect()` 在卸载时整合和原子保存 `~/.meml/state/deepseek-harness.state`；`MEML_STATE_PATH` 可覆盖该位置。
 
 安装 Skill：复制 `integrations/skills/meml-agent-memory/` 至项目 `.dsh/skills/meml-agent-memory/` 或 `.agents/skills/meml-agent-memory/`。
 
@@ -60,7 +60,7 @@ export MEML_BIN="/absolute/path/to/meml/zig-out/bin/meml"
 claude --plugin-dir /Users/mindon/dev/playground/meml/integrations/claude-code/meml-plugin
 ```
 
-插件会通过 `${CLAUDE_PLUGIN_ROOT}/scripts/meml-mcp.mjs` 注册只读 `meml_recall`，并将状态保存至 `${CLAUDE_PROJECT_DIR}/.meml/claude-code.state`。修改插件组件后，在 Claude Code 中执行 `/reload-plugins`。
+插件会通过 `${CLAUDE_PLUGIN_ROOT}/scripts/meml-mcp.mjs` 注册只读 `meml_recall`，并将状态保存至 `~/.meml/state/claude-code.state`；`MEML_STATE_PATH` 可覆盖该位置。修改插件组件后，在 Claude Code 中执行 `/reload-plugins`。
 
 若只需 MCP 而不加载插件，可使用：
 

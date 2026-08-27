@@ -1,10 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
 import { Type } from "typebox";
 import { MemlClient } from "../../../meml-client.ts";
 
 export default function memlPlugin(pi: ExtensionAPI): void {
   const client = new MemlClient({
-    statePath: process.env.MEML_STATE_PATH ?? ".meml/pi.state",
+    statePath: process.env.MEML_STATE_PATH ?? `${homedir()}/.meml/state/pi.state`,
     actor: "pi-agent",
     receiptPrefix: "pi-verified-",
   });
