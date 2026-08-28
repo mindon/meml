@@ -18,7 +18,7 @@ Semantics and ranking are controlled by a single kernel; indexes, external signa
 
 ## Key Benefits
 
-- **Explainable retrieval**: every activation carries semantic, lexical, temporal, graph, procedural, preference, goal, confidence, scope, metric, structure, lineage, stability, and conflict contributions; graph propagation is bounded by the kernel and cognitive state.
+- **Explainable retrieval**: every activation carries semantic, lexical, temporal, graph, procedural, preference, goal, confidence, scope, metric, structure, lineage, stability, and conflict contributions plus raw score and weight for each external provider; graph propagation is bounded by the kernel and cognitive state.
 - **Stable kernel boundary**: providers only produce candidate IDs; the kernel owns identity, scoring, ordering, limits, conflict handling, and explanations.
 - **Dynamic cognitive state**: every cognitive record can be active, contested, superseded, or archived. Host-verified bounded transitions persist an immutable audit trail and change future activation conditions; configurable `PlasticityPolicy`, derived stability/attractor state, cutoff-based procedure forecasts, explicit-candidate quality gates, and conservative multi-objective comparisons remain explainable.
 - **Controlled consolidation**: consolidate explicitly in full or incrementally, or enable event-triggered consolidation for later observations; policies control memory, belief, concept, procedure, and neural rules independently.
@@ -35,8 +35,8 @@ Kernel owns identity, scoring, ordering, limits, conflicts, explanations
 
 Runtime ────────> indexed symbolic backend (default)
                   ├─ exhaustive symbolic backend
-                  ├─ vector / graph candidate providers
-                  └─ deterministic neural consolidation / retrieval providers
+                  ├─ vector / graph / hybrid candidate providers
+                  └─ deterministic neural and local embedding reranking providers
                          │
                          ▼
                   candidate routing → kernel signals → conflict/context policy
@@ -48,8 +48,9 @@ Runtime ────────> indexed symbolic backend (default)
 ## Verified Capabilities
 
 - Write lightweight experiences with `observe()`, or scopes, metrics, artifacts, and structure with `record(RecordInput)`; activate relevant memory by query, goal, context, structured scope, and fingerprint.
-- Use indexed, vector, and graph candidate providers; rebuild derived indexes from persisted semantic records after recovery.
-- Add metadata, embedding, neural, and versioned calibration retrieval signal providers without changing the kernel scoring contract.
+- Use a shared, versioned ASCII tokenizer for indexes, candidate routing, lexical ranking, and deterministic hash embeddings; rebuild derived indexes from persisted semantic records after recovery.
+- Use indexed, vector, graph, and `hybrid` candidate providers; `backend.LocalSemantic` attaches a host-local ANN source and `backend.Hybrid` creates its deduplicated union with lexical candidates. Providers only return IDs and cannot bypass kernel filtering or ranking.
+- Add metadata, embedding, neural, versioned calibration, and host-local cached embedding retrieval providers with explicit weights and activation traces, without changing the kernel scoring contract.
 - Derive memory, belief, concept, procedure, and deterministic neural artifacts from repeated experience; derivation records carry rules and sources.
 - Run scoped incremental consolidation via `consolidatePending()`, or enable event-triggered consolidation for subsequent `observe()` calls with `enableAutoConsolidation(policy)`. The default `observe()` stays write-only and does not implicitly change derived structure.
 - Handle conflicting beliefs by context: mutually exclusive beliefs can be active simultaneously in different contexts; same-context conflicts become contested and affect later activations.

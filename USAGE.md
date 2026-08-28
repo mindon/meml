@@ -284,6 +284,8 @@ meml.signals.Calibrated.provider()
 meml.neural.retrievalProvider()
 ```
 
+`LocalEmbedding` 是宿主拥有的本地向量缓存 provider：宿主预计算 query/node 向量并提供回调，MEML 仅本地计算余弦分数，不加载模型、不访问网络，也不持久化向量、模型或凭据。`backend.LocalSemantic` 用同一边界暴露宿主本地 ANN 候选源；可通过 `backend.Hybrid` 与任一 lexical provider 去重并集。`model_version` 与 `model_sha256` 应由宿主记录为可审计的制品元数据。
+
 ---
 
 ## 3. 命令行桥接（`meml`）
@@ -325,8 +327,8 @@ meml.neural.retrievalProvider()
 | `set_attestation_verifier` | `issuers[{issuer,key_id,public_key}]` | `{ok}`；Base64 Ed25519 公钥 |
 | `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,统计}` |
 | `auto_consolidate` | `enable,…` | `{ok}` |
-| `signals` | `providers` | `{ok,providers}` |
-| `backend` | `backend` | `{ok}` |
+| `signals` | `providers` | `{ok,providers}`；元素可为名称或 `{name,weight}` |
+| `backend` | `backend` | `{ok}`；`hybrid` 为 lexical ∪ local hash-vector 候选 |
 | `persist` | `path?,atomic` | `{ok}`；未给 `path` 时使用 `~/.meml/state/memory.state` |
 | `recover` | `path?` | `{ok}`；未给 `path` 时使用 `~/.meml/state/memory.state` |
 | `import_meml` | `files` | `{ok,documents,observed,asserted,links}`；原子导入多个受限 `.meml` 文件 |
@@ -341,8 +343,10 @@ meml.neural.retrievalProvider()
 - `state`：`active | contested | superseded | archived`
 - `outcome`：`success | failure`
 - `failure_class`：`none | timeout | transport | tool_error | invalid_result | policy_denied | unauthorized | cancelled | unknown`
-- `backend`：`vector | graph`
-- `providers`（数组）：`metadata | embedding | reranker | calibrated | neural`
+- `backend`：`vector | graph | hybrid`
+- `providers`（数组）：`metadata | embedding | reranker | calibrated | neural`，每项可写为字符串或 `{ "name":"embedding", "weight":2 }`
+
+`activate` 响应会额外返回 `provider_trace`，按 provider 列出未加权 `score` 与配置 `weight`。文本匹配由 `tokenizer-ascii-v1` 统一处理：ASCII 大小写归一、按兼容分隔符分词；该版本刻意不隐式做中文/CJK 分词。
 
 ### 3.3 多源记忆导入与默认存储
 

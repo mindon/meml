@@ -99,8 +99,13 @@ pub fn runWithPipeline(store: *const store_mod.Store, backend: backend_mod.Backe
         const stable = ranking.stability(store, node.*);
         if (stable.score < context.minimum_stability) continue;
         var scored_signals = ranking.signals(store, node.*, context);
-        if (pipeline) |p| scored_signals.external = p.score(store, node.*, context);
-        try output.append(allocator, .{ .id = id, .score = scored_signals.total(context.weights), .signals = scored_signals });
+        var provider_trace = model.ProviderTrace{};
+        if (pipeline) |p| {
+            const pipeline_score = p.scoreWithTrace(store, node.*, context);
+            scored_signals.external = pipeline_score.value;
+            provider_trace = pipeline_score.trace;
+        }
+        try output.append(allocator, .{ .id = id, .score = scored_signals.total(context.weights), .signals = scored_signals, .provider_trace = provider_trace });
     }
     const scored = output.items.len;
     std.sort.heap(model.Activation, output.items, {}, ranking.sortActivations);

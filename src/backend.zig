@@ -1,6 +1,7 @@
 const std = @import("std");
 const model = @import("model.zig");
 const store_mod = @import("store.zig");
+const tokenizer = @import("tokenizer.zig");
 
 /// Provider contract: providers own candidate generation only; the kernel owns
 /// node identity, scoring, ordering, limits, and explanations.
@@ -35,11 +36,89 @@ pub const Provider = struct {
 };
 pub const Backend = Provider;
 
+/// A host-owned local semantic candidate source, typically backed by an ANN
+/// index built from precomputed embeddings. All callbacks must be local and
+/// must not perform network or model I/O during `candidates`.
+pub const LocalSemantic = struct {
+    context: *anyopaque,
+    model_version: []const u8,
+    model_sha256: []const u8,
+    resetFn: *const fn (*anyopaque, *const store_mod.Store) anyerror!void,
+    upsertFn: *const fn (*anyopaque, *const store_mod.Store, u64) anyerror!void,
+    removeFn: *const fn (*anyopaque, u64) void,
+    candidatesFn: *const fn (*anyopaque, *const store_mod.Store, model.Context, std.mem.Allocator) anyerror!std.ArrayList(u64),
+
+    pub fn provider(self: *LocalSemantic) Provider {
+        return .{ .context = self, .nameFn = LocalSemantic.name, .resetFn = LocalSemantic.reset, .upsertFn = LocalSemantic.upsert, .removeFn = LocalSemantic.remove, .candidatesFn = LocalSemantic.candidates };
+    }
+    fn name(context: *anyopaque) []const u8 {
+        const self: *const LocalSemantic = @ptrCast(@alignCast(context));
+        return self.model_version;
+    }
+    fn reset(context: *anyopaque, store: *const store_mod.Store) !void {
+        const self: *LocalSemantic = @ptrCast(@alignCast(context));
+        try self.resetFn(self.context, store);
+    }
+    fn upsert(context: *anyopaque, store: *const store_mod.Store, id: u64) !void {
+        const self: *LocalSemantic = @ptrCast(@alignCast(context));
+        try self.upsertFn(self.context, store, id);
+    }
+    fn remove(context: *anyopaque, id: u64) void {
+        const self: *LocalSemantic = @ptrCast(@alignCast(context));
+        self.removeFn(self.context, id);
+    }
+    fn candidates(context: *anyopaque, store: *const store_mod.Store, request: model.Context, allocator: std.mem.Allocator) !std.ArrayList(u64) {
+        const self: *LocalSemantic = @ptrCast(@alignCast(context));
+        return self.candidatesFn(self.context, store, request, allocator);
+    }
+};
+
+/// Composes two candidate sources by set union. It never ranks records: every
+/// returned ID still flows through the kernel's lifecycle and scoring policy.
+pub const Hybrid = struct {
+    left: Provider,
+    right: Provider,
+
+    pub fn provider(self: *Hybrid) Provider {
+        return .{ .context = self, .nameFn = Hybrid.name, .resetFn = Hybrid.reset, .upsertFn = Hybrid.upsert, .removeFn = Hybrid.remove, .candidatesFn = Hybrid.candidates };
+    }
+    fn name(_: *anyopaque) []const u8 {
+        return "hybrid";
+    }
+    fn reset(context: *anyopaque, store: *const store_mod.Store) !void {
+        const self: *Hybrid = @ptrCast(@alignCast(context));
+        try self.left.reset(store);
+        try self.right.reset(store);
+    }
+    fn upsert(context: *anyopaque, store: *const store_mod.Store, id: u64) !void {
+        const self: *Hybrid = @ptrCast(@alignCast(context));
+        try self.left.upsert(store, id);
+        try self.right.upsert(store, id);
+    }
+    fn remove(context: *anyopaque, id: u64) void {
+        const self: *Hybrid = @ptrCast(@alignCast(context));
+        self.left.remove(id);
+        self.right.remove(id);
+    }
+    fn candidates(context: *anyopaque, store: *const store_mod.Store, request: model.Context, allocator: std.mem.Allocator) !std.ArrayList(u64) {
+        const self: *Hybrid = @ptrCast(@alignCast(context));
+        var left = try self.left.candidates(store, request, allocator);
+        defer left.deinit(allocator);
+        var right = try self.right.candidates(store, request, allocator);
+        defer right.deinit(allocator);
+        var combined = std.ArrayList(u64).empty;
+        errdefer combined.deinit(allocator);
+        var seen = std.AutoHashMap(u64, void).init(allocator);
+        defer seen.deinit();
+        for (left.items) |id| if (!(try seen.getOrPut(id)).found_existing) try combined.append(allocator, id);
+        for (right.items) |id| if (!(try seen.getOrPut(id)).found_existing) try combined.append(allocator, id);
+        return combined;
+    }
+};
+
 fn exhaustiveReset(_: *anyopaque, _: *const store_mod.Store) !void {}
 fn exhaustiveUpsert(_: *anyopaque, _: *const store_mod.Store, _: u64) !void {}
 fn exhaustiveRemove(_: *anyopaque, _: u64) void {}
-
-const token_delimiters = " \t\n\r,.;:!?()[]{}\"'";
 
 const Indexes = struct {
     allocator: std.mem.Allocator,
@@ -61,17 +140,22 @@ const Indexes = struct {
         if (token.len == 0) return;
         const owned = try self.allocator.alloc(u8, token.len);
         errdefer self.allocator.free(owned);
-        for (token, 0..) |byte, index| owned[index] = std.ascii.toLower(byte);
+        _ = tokenizer.lowerInto(owned, token);
         const entry = try self.tokens.getOrPut(owned);
         if (!entry.found_existing) entry.value_ptr.* = .empty else self.allocator.free(owned);
         for (entry.value_ptr.items) |old| if (old == id) return;
         try entry.value_ptr.append(self.allocator, id);
     }
+    fn addText(self: *Indexes, text: []const u8, id: u64) !void {
+        var tokens = tokenizer.tokenize(text);
+        while (tokens.next()) |token| try self.addToken(token, id);
+    }
     fn indexNode(self: *Indexes, store: *const store_mod.Store, node: model.Node) !void {
-        var buffer: [2048]u8 = undefined;
-        const text = std.fmt.bufPrint(&buffer, "{s} {s} {s} {s} {s}", .{ node.subject, node.predicate, node.object, node.context, node.result }) catch "";
-        var it = std.mem.tokenizeAny(u8, text, token_delimiters);
-        while (it.next()) |token| try self.addToken(token, node.id);
+        try self.addText(node.subject, node.id);
+        try self.addText(node.predicate, node.id);
+        try self.addText(node.object, node.id);
+        try self.addText(node.context, node.id);
+        try self.addText(node.result, node.id);
         for (store.scoped_records.items) |record| if (record.node == node.id) {
             try self.addToken(record.scope.key, node.id);
             try self.addToken(record.scope.value, node.id);
@@ -98,17 +182,18 @@ const Indexes = struct {
         for (store.nodes.items) |node| try self.indexNode(store, node);
     }
 };
-fn hashToken(token: []const u8) u64 {
-    var h: u64 = 14695981039346656037;
-    for (token) |c| h = (h ^ std.ascii.toLower(c)) *% 1099511628211;
-    return h;
+fn addTextToVector(out: *[32]f32, text: []const u8) void {
+    var tokens = tokenizer.tokenize(text);
+    while (tokens.next()) |token| out[tokenizer.hash(token) % out.len] += 1;
 }
 fn vector(node: model.Node, query: []const u8) [32]f32 {
     var out = std.mem.zeroes([32]f32);
-    var buffer: [2048]u8 = undefined;
-    const text = std.fmt.bufPrint(&buffer, "{s} {s} {s} {s} {s} {s}", .{ node.subject, node.predicate, node.object, node.context, node.result, query }) catch "";
-    var it = std.mem.tokenizeAny(u8, text, " \t\n\r,.;:!?()[]{}\"'");
-    while (it.next()) |token| out[hashToken(token) % 32] += 1;
+    addTextToVector(&out, node.subject);
+    addTextToVector(&out, node.predicate);
+    addTextToVector(&out, node.object);
+    addTextToVector(&out, node.context);
+    addTextToVector(&out, node.result);
+    addTextToVector(&out, query);
     return out;
 }
 fn contains(haystack: []const u8, needle: []const u8) bool {
@@ -122,7 +207,7 @@ fn all(_: *anyopaque, store: *const store_mod.Store, _: model.Context, allocator
 fn appendTokenMatches(indexes: *const Indexes, raw_token: []const u8, seen: *std.AutoHashMap(u64, void), ids: *std.ArrayList(u64), allocator: std.mem.Allocator) !void {
     const token = try allocator.alloc(u8, raw_token.len);
     defer allocator.free(token);
-    for (raw_token, 0..) |byte, index| token[index] = std.ascii.toLower(byte);
+    _ = tokenizer.lowerInto(token, raw_token);
     if (indexes.tokens.get(token)) |matches| for (matches.items) |id| if (!seen.contains(id)) {
         try seen.put(id, {});
         try ids.append(allocator, id);
@@ -141,21 +226,35 @@ fn indexedCandidates(ctx: *anyopaque, store: *const store_mod.Store, context: mo
     var has_token = false;
     const terms = [_][]const u8{ context.query, context.goal, context.situation, context.preferred };
     for (terms) |term| {
-        var tokens = std.mem.tokenizeAny(u8, term, token_delimiters);
+        var tokens = tokenizer.tokenize(term);
         while (tokens.next()) |token| {
             has_token = true;
             try appendTokenMatches(indexes, token, &seen, &ids, allocator);
         }
     }
     for (context.scopes) |scope| {
-        has_token = true;
-        try appendTokenMatches(indexes, scope.key, &seen, &ids, allocator);
-        try appendTokenMatches(indexes, scope.value, &seen, &ids, allocator);
+        var keys = tokenizer.tokenize(scope.key);
+        while (keys.next()) |token| {
+            has_token = true;
+            try appendTokenMatches(indexes, token, &seen, &ids, allocator);
+        }
+        var values = tokenizer.tokenize(scope.value);
+        while (values.next()) |token| {
+            has_token = true;
+            try appendTokenMatches(indexes, token, &seen, &ids, allocator);
+        }
     }
     if (context.structure) |structure| {
-        has_token = true;
-        try appendTokenMatches(indexes, structure.kind, &seen, &ids, allocator);
-        try appendTokenMatches(indexes, structure.fingerprint, &seen, &ids, allocator);
+        var kinds = tokenizer.tokenize(structure.kind);
+        while (kinds.next()) |token| {
+            has_token = true;
+            try appendTokenMatches(indexes, token, &seen, &ids, allocator);
+        }
+        var fingerprints = tokenizer.tokenize(structure.fingerprint);
+        while (fingerprints.next()) |token| {
+            has_token = true;
+            try appendTokenMatches(indexes, token, &seen, &ids, allocator);
+        }
     }
     if (!has_token) return all(ctx, store, context, allocator);
     return ids;
@@ -166,6 +265,7 @@ fn indexedCandidates(ctx: *anyopaque, store: *const store_mod.Store, context: mo
 fn graph(ctx: *anyopaque, store: *const store_mod.Store, context: model.Context, allocator: std.mem.Allocator) !std.ArrayList(u64) {
     return indexedCandidates(ctx, store, context, allocator);
 }
+
 fn vectorCandidates(ctx: *anyopaque, store: *const store_mod.Store, context: model.Context, allocator: std.mem.Allocator) !std.ArrayList(u64) {
     const indexes: *Indexes = @ptrCast(@alignCast(ctx));
     var ids = std.ArrayList(u64).empty;
@@ -184,6 +284,22 @@ fn vectorCandidates(ctx: *anyopaque, store: *const store_mod.Store, context: mod
         if (dot > 0 and dot / (@sqrt(qn * vn) + 0.0001) >= 0.15) try ids.append(allocator, node.id);
     }
     if (ids.items.len == 0 and context.query.len == 0) return all(ctx, store, context, allocator);
+    return ids;
+}
+
+/// Bounded lexical ∪ hash-vector candidate recall. This only contributes IDs;
+/// lifecycle filtering, propagation, scoring and ordering remain kernel-owned.
+fn hybridCandidates(ctx: *anyopaque, store: *const store_mod.Store, context: model.Context, allocator: std.mem.Allocator) !std.ArrayList(u64) {
+    var lexical_ids = try indexedCandidates(ctx, store, context, allocator);
+    defer lexical_ids.deinit(allocator);
+    var vector_ids = try vectorCandidates(ctx, store, context, allocator);
+    defer vector_ids.deinit(allocator);
+    var ids = std.ArrayList(u64).empty;
+    errdefer ids.deinit(allocator);
+    var seen = std.AutoHashMap(u64, void).init(allocator);
+    defer seen.deinit();
+    for (lexical_ids.items) |id| if (!(try seen.getOrPut(id)).found_existing) try ids.append(allocator, id);
+    for (vector_ids.items) |id| if (!(try seen.getOrPut(id)).found_existing) try ids.append(allocator, id);
     return ids;
 }
 fn reset(ctx: *anyopaque, store: *const store_mod.Store) !void {
@@ -207,17 +323,21 @@ fn nameVector(_: *anyopaque) []const u8 {
 fn nameGraph(_: *anyopaque) []const u8 {
     return "graph";
 }
+fn nameHybrid(_: *anyopaque) []const u8 {
+    return "hybrid";
+}
 
 pub const Owned = struct {
     indexes: *Indexes,
     provider: Provider,
-    pub fn init(allocator: std.mem.Allocator, kind: enum { symbolic, vector, graph }) Owned {
+    pub fn init(allocator: std.mem.Allocator, kind: enum { symbolic, vector, graph, hybrid }) Owned {
         const indexes = allocator.create(Indexes) catch @panic("MEML backend allocation failed");
         indexes.* = Indexes.init(allocator);
         return .{ .indexes = indexes, .provider = switch (kind) {
             .symbolic => .{ .context = indexes, .nameFn = nameSymbolic, .resetFn = reset, .upsertFn = upsert, .removeFn = remove, .candidatesFn = indexedCandidates },
             .vector => .{ .context = indexes, .nameFn = nameVector, .resetFn = reset, .upsertFn = upsert, .removeFn = remove, .candidatesFn = vectorCandidates },
             .graph => .{ .context = indexes, .nameFn = nameGraph, .resetFn = reset, .upsertFn = upsert, .removeFn = remove, .candidatesFn = graph },
+            .hybrid => .{ .context = indexes, .nameFn = nameHybrid, .resetFn = reset, .upsertFn = upsert, .removeFn = remove, .candidatesFn = hybridCandidates },
         } };
     }
     pub fn deinit(self: *Owned) void {

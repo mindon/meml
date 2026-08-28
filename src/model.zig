@@ -441,4 +441,22 @@ pub const Signals = struct {
     }
 };
 
-pub const Activation = struct { id: u64, score: f64, signals: Signals };
+pub const ProviderContribution = struct {
+    name: []const u8 = "",
+    score: f64 = 0,
+    weight: f64 = 0,
+};
+
+/// Fixed-capacity provider trace keeps activation explanations allocation-free.
+/// Provider names are borrowed from registered providers and must outlive use.
+pub const ProviderTrace = struct {
+    count: u8 = 0,
+    items: [8]ProviderContribution = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} },
+};
+
+pub const Activation = struct {
+    id: u64,
+    score: f64,
+    signals: Signals,
+    provider_trace: ProviderTrace = .{},
+};

@@ -851,6 +851,108 @@ test "event-triggered consolidation evolves memory during observe" {
     runtime.disableAutoConsolidation();
 }
 
+test "token lexical ranking normalizes multi-word and case-variant queries" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const expected = try runtime.observe("agent", "builds", "TypeScript artifact", "browser", "success", 1);
+    _ = try runtime.observe("agent", "builds", "Python package", "data", "success", 1);
+    var result = try runtime.activate(.{ .query = "BUILD typescript" }, 2, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(expected, result.items[0].id);
+    try std.testing.expect(result.items[0].signals.lexical > 0.1);
+}
+
+test "hybrid backend unions lexical and vector candidates" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const expected = try runtime.observe("agent", "uses", "allocator memory", "runtime", "success", 1);
+    _ = try runtime.observe("agent", "uses", "vector graphics", "ui", "success", 1);
+    try runtime.useHybridBackend();
+    try std.testing.expectEqualStrings("hybrid", runtime.backend.name());
+    var candidates = try runtime.backend.candidates(&runtime.store, .{ .query = "ALLOCATOR" }, std.testing.allocator);
+    defer candidates.deinit(std.testing.allocator);
+    var found = false;
+    for (candidates.items) |id| {
+        if (id == expected) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+const LocalEmbeddingTestCache = struct {
+    fn query(_: *anyopaque, _: meml.Context) ?[]const f32 {
+        return &[_]f32{ 1, 0 };
+    }
+    fn node(_: *anyopaque, id: u64) ?[]const f32 {
+        return switch (id) {
+            1 => &[_]f32{ 1, 0 },
+            2 => &[_]f32{ 0, 1 },
+            else => null,
+        };
+    }
+};
+
+const LocalSemanticTestIndex = struct {
+    fn reset(_: *anyopaque, _: *const meml.Store) !void {}
+    fn upsert(_: *anyopaque, _: *const meml.Store, _: u64) !void {}
+    fn remove(_: *anyopaque, _: u64) void {}
+    fn candidates(_: *anyopaque, _: *const meml.Store, _: meml.Context, allocator: std.mem.Allocator) !std.ArrayList(u64) {
+        var ids = std.ArrayList(u64).empty;
+        try ids.append(allocator, 2);
+        return ids;
+    }
+};
+
+test "host local semantic candidates compose with lexical routing" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const lexical = try runtime.observe("agent", "uses", "browser toolkit", "browser", "success", 1);
+    const semantic = try runtime.observe("agent", "uses", "web automation", "browser", "success", 1);
+    var local = meml.backend.LocalSemantic{
+        .context = undefined,
+        .model_version = "test-ann-v1",
+        .model_sha256 = "test-sha256",
+        .resetFn = LocalSemanticTestIndex.reset,
+        .upsertFn = LocalSemanticTestIndex.upsert,
+        .removeFn = LocalSemanticTestIndex.remove,
+        .candidatesFn = LocalSemanticTestIndex.candidates,
+    };
+    var hybrid = meml.backend.Hybrid{ .left = runtime.backend, .right = local.provider() };
+    try runtime.useCandidateBackend(hybrid.provider());
+    try std.testing.expectEqualStrings("hybrid", runtime.backend.name());
+    var candidates = try runtime.backend.candidates(&runtime.store, .{ .query = "toolkit" }, std.testing.allocator);
+    defer candidates.deinit(std.testing.allocator);
+    var found_lexical = false;
+    var found_semantic = false;
+    for (candidates.items) |id| {
+        if (id == lexical) found_lexical = true;
+        if (id == semantic) found_semantic = true;
+    }
+    try std.testing.expect(found_lexical);
+    try std.testing.expect(found_semantic);
+}
+
+test "local embedding provider reranks cached vectors with provider trace" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const semantic_match = try runtime.observe("agent", "topic", "safe allocation", "runtime", "success", 1);
+    _ = try runtime.observe("agent", "topic", "fast rendering", "ui", "success", 1);
+    var cache = meml.signals.LocalEmbedding{
+        .context = undefined,
+        .model_version = "test-local-v1",
+        .model_sha256 = "test-sha256",
+        .queryFn = LocalEmbeddingTestCache.query,
+        .nodeFn = LocalEmbeddingTestCache.node,
+    };
+    try runtime.addSignalProvider(cache.provider().weighted(2));
+    var result = try runtime.activate(.{ .query = "topic" }, 2, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(semantic_match, result.items[0].id);
+    try std.testing.expectEqual(@as(u8, 1), result.items[0].provider_trace.count);
+    try std.testing.expectEqualStrings("test-local-v1", result.items[0].provider_trace.items[0].name);
+    try std.testing.expectApproxEqAbs(@as(f64, 2), result.items[0].provider_trace.items[0].weight, 0.000001);
+    try std.testing.expect(result.items[0].signals.external > 0.9);
+}
+
 fn countKindForTest(runtime: *const meml.Runtime, kind: meml.Kind) usize {
     var count: usize = 0;
     for (runtime.store.nodes.items) |node| {

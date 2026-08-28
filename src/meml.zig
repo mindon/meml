@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const model = @import("model.zig");
 pub const backend = @import("backend.zig");
+pub const tokenizer = @import("tokenizer.zig");
 pub const Store = @import("store.zig").Store;
 pub const Runtime = @import("runtime.zig").Runtime;
 pub const source = @import("source.zig");

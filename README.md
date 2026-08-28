@@ -18,7 +18,7 @@ MEML 是一个面向 Agent 的可编程记忆运行时。它将经验、证据�
 
 ## 核心优势
 
-- **可解释检索**：每项激活都携带语义、词法、时间、图关系、过程、偏好、目标、置信度、作用域、指标、结构、谱系和冲突等信号分解。
+- **可解释检索**：每项激活都携带语义、词法、时间、图关系、过程、偏好、目标、置信度、作用域、指标、结构、谱系和冲突等信号分解，并附带每个外部 provider 的原始分数与权重。
 - **通用结构化证据**：记录可携带版本化范围、带单位和不确定性的指标、内容寻址制品与结构指纹；`derived_from` 统一表达可追溯谱系。
 - **稳定的内核边界**：provider 仅产生候选 ID；领域 adapter 仅规范化输入与信号；内核负责身份、评分、顺序、数量限制、矛盾处理和解释。
 - **动态认知状态**：所有认知记录可处于 active、contested、superseded 或 archived 状态；经宿主验证的有限 transition 会留下包含前后状态、来源和证明的不可变审计记录，并改变未来激活条件。可配置 `PlasticityPolicy`、派生稳定性/吸引子指标、截止时间过程预测、显式候选质量门和多目标保守比较均保持可解释。
@@ -36,8 +36,8 @@ Kernel owns identity, scoring, ordering, limits, conflicts, explanations
 
 Runtime ────────> indexed symbolic backend (default)
                   ├─ exhaustive symbolic backend
-                  ├─ vector / graph candidate providers
-                  └─ deterministic neural consolidation / retrieval providers
+                  ├─ vector / graph / hybrid candidate providers
+                  └─ deterministic neural, local embedding reranking providers
                          │
                          ▼
                   candidate routing → kernel signals → conflict/context policy
@@ -49,8 +49,9 @@ Runtime ────────> indexed symbolic backend (default)
 ## 已验证能力
 
 - 使用 `observe()` 写入轻量经验，或以 `record(RecordInput)` 写入范围、指标、制品和结构；按查询、目标、情境、结构化范围与指纹激活相关记忆。
-- 使用索引、向量和图候选 provider；恢复后从持久化语义记录重建派生索引。
-- 添加元数据、嵌入、神经及版本化校准检索信号 provider，而不改变内核评分合约。
+- 使用共享、版本化的 ASCII tokenizer 进行索引、候选路由、词法排序和确定性 hash embedding；恢复后从持久化语义记录重建派生索引。
+- 使用索引、向量、图和 `hybrid` 候选 provider；`backend.LocalSemantic` 可接入宿主本地 ANN，并通过 `backend.Hybrid` 与 lexical 候选去重并集。provider 仅返回 ID，不能绕过内核过滤与排序。
+- 添加元数据、嵌入、神经、版本化校准及宿主本地缓存 embedding 检索信号 provider；外部 provider 有显式权重并在 activation trace 中解释，而不改变内核评分合约。
 - 从重复经验派生 memory、belief、concept、procedure 和确定性 neural artifact；推导记录携带规则与来源。
 - 通过 `consolidatePending()` 执行作用域增量整合，或通过 `enableAutoConsolidation(policy)` 为后续 `observe()` 启用事件触发整合。默认 `observe()` 保持只写入经验、不自动改变派生结构。
 - 对冲突信念按情境处理：不同情境下互斥信念可同时 active；同情境冲突会进入 contested 并影响后续激活。

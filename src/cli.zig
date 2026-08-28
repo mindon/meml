@@ -320,6 +320,16 @@ fn encodeActivation(a: Allocator, runtime: *const meml.Runtime, act: meml.Activa
     try sig.put(a, "external", .{ .float = act.signals.external });
     try map.put(a, "signals", .{ .object = sig });
 
+    var providers = Array.init(a);
+    for (act.provider_trace.items[0..act.provider_trace.count]) |contribution| {
+        var provider = ObjectMap.empty;
+        try provider.put(a, "name", .{ .string = contribution.name });
+        try provider.put(a, "score", .{ .float = contribution.score });
+        try provider.put(a, "weight", .{ .float = contribution.weight });
+        try providers.append(.{ .object = provider });
+    }
+    try map.put(a, "provider_trace", .{ .array = providers });
+
     if (want_details) {
         if (runtime.store.constNode(act.id)) |node| {
             try map.put(a, "kind", .{ .string = @tagName(node.kind) });
@@ -685,14 +695,17 @@ fn cmdAutoConsolidate(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io
 }
 
 fn cmdSignals(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const Config = struct { name: []const u8, weight: f64 };
     const arr = fArray(o, "providers") orelse return error.MissingProviders;
     var count: usize = 0;
     for (arr.items) |item| {
-        const name = switch (item) {
-            .string => |s| s,
+        const config = switch (item) {
+            .string => |name| Config{ .name = name, .weight = 1 },
+            .object => |object| Config{ .name = fStr(object, "name") orelse return error.InvalidProvider, .weight = fF64(object, "weight", 1) },
             else => return error.InvalidProvider,
         };
-        try state.runtime.addSignalProvider(try signalProvider(name));
+        if (!std.math.isFinite(config.weight) or config.weight < 0) return error.InvalidProviderWeight;
+        try state.runtime.addSignalProvider((try signalProvider(config.name)).weighted(config.weight));
         count += 1;
     }
     var resp = ObjectMap.empty;
@@ -707,6 +720,8 @@ fn cmdBackend(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer)
         try state.runtime.useVectorBackend();
     } else if (std.mem.eql(u8, backend, "graph")) {
         try state.runtime.useGraphBackend();
+    } else if (std.mem.eql(u8, backend, "hybrid")) {
+        try state.runtime.useHybridBackend();
     } else {
         return error.InvalidBackend;
     }

@@ -1,19 +1,30 @@
 const std = @import("std");
 const model = @import("model.zig");
 const store_mod = @import("store.zig");
+const tokenizer = @import("tokenizer.zig");
 
 pub fn has(haystack: []const u8, needle: []const u8) bool {
     return needle.len > 0 and std.mem.indexOf(u8, haystack, needle) != null;
 }
 
-fn lexical(node: model.Node, query: []const u8) f64 {
-    if (query.len == 0) return 0;
-    var score: f64 = 0;
-    if (has(node.subject, query)) score += 0.25;
-    if (has(node.predicate, query)) score += 0.25;
-    if (has(node.object, query)) score += 0.3;
-    if (has(node.context, query)) score += 0.2;
-    return @min(1, score);
+fn tokenOverlap(query: []const u8, document: []const u8) f64 {
+    var total: usize = 0;
+    var matched: usize = 0;
+    var query_tokens = tokenizer.tokenize(query);
+    while (query_tokens.next()) |token| {
+        total += 1;
+        if (tokenizer.containsToken(document, token)) matched += 1;
+    }
+    if (total == 0) return 0;
+    return @as(f64, @floatFromInt(matched)) / @as(f64, @floatFromInt(total));
+}
+
+fn lexical(node: model.Node, context: model.Context) f64 {
+    const query_weighted = tokenOverlap(context.query, node.subject) * 0.15 + tokenOverlap(context.query, node.predicate) * 0.20 + tokenOverlap(context.query, node.object) * 0.35 + tokenOverlap(context.query, node.context) * 0.20 + tokenOverlap(context.query, node.result) * 0.10;
+    const goal_weighted = tokenOverlap(context.goal, node.object) * 0.45 + tokenOverlap(context.goal, node.context) * 0.35 + tokenOverlap(context.goal, node.result) * 0.20;
+    const situation_weighted = tokenOverlap(context.situation, node.context) * 0.75 + tokenOverlap(context.situation, node.object) * 0.25;
+    const preferred_weighted = tokenOverlap(context.preferred, node.object) * 0.80 + tokenOverlap(context.preferred, node.result) * 0.20;
+    return std.math.clamp(query_weighted * 0.70 + goal_weighted * 0.15 + situation_weighted * 0.10 + preferred_weighted * 0.05, 0, 1);
 }
 
 fn semantic(node: model.Node, context: model.Context) f64 {
@@ -124,7 +135,7 @@ pub fn signals(store: *const store_mod.Store, node: model.Node, context: model.C
     const temporal = if (context.now == 0) 0.5 else 1 / (1 + @as(f64, @floatFromInt(age)) / 86_400);
     var output = model.Signals{
         .semantic = semantic(node, context),
-        .lexical = lexical(node, context.query),
+        .lexical = lexical(node, context),
         .temporal = temporal,
         .causal = graphScore(store, node.id, context),
         .procedural = if (node.kind == .procedure or has(node.predicate, "does") or has(context.goal, "how")) 1 else 0,

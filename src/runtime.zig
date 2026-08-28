@@ -1179,6 +1179,21 @@ pub const Runtime = struct {
         self.backend = self.backend_state.provider;
         try self.backend.reset(&self.store);
     }
+    /// Uses a bounded union of lexical and local hash-vector candidate recall.
+    /// The retrieval kernel still owns filtering, propagation and final ranking.
+    pub fn useHybridBackend(self: *Runtime) !void {
+        self.backend_state.deinit();
+        self.backend_state = backend_mod.Owned.init(self.allocator, .hybrid);
+        self.backend = self.backend_state.provider;
+        try self.backend.reset(&self.store);
+    }
+    /// Installs a host-owned candidate provider. The provider and its context
+    /// must outlive this Runtime or a later `use*Backend` call. The provider
+    /// may recall IDs only; kernel filtering and final scoring remain enforced.
+    pub fn useCandidateBackend(self: *Runtime, provider: backend_mod.Provider) !void {
+        self.backend = provider;
+        try self.backend.reset(&self.store);
+    }
     /// Default persistence is journaled and atomic. The raw persistence writer
     /// remains internal to the storage protocol and is not a Runtime API.
     pub fn persist(self: *Runtime, io: std.Io, path: []const u8) !void {

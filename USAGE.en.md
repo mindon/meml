@@ -284,6 +284,8 @@ meml.signals.Calibrated.provider()
 meml.neural.retrievalProvider()
 ```
 
+`LocalEmbedding` is a host-owned local vector-cache provider: the host precomputes query/node vectors and supplies callbacks; MEML only computes local cosine scores. `backend.LocalSemantic` exposes a host-local ANN candidate source under the same boundary; compose it with any lexical provider through `backend.Hybrid` for a deduplicated union. MEML neither loads models nor performs network I/O, and does not persist vectors, models, or credentials. The host should record `model_version` and `model_sha256` as auditable artifact metadata.
+
 ---
 
 ## 3. Command-line bridge (`meml`)
@@ -325,8 +327,8 @@ Response format: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 | `set_attestation_verifier` | `issuers[{issuer,key_id,public_key}]` | `{ok}`; Base64 Ed25519 public keys |
 | `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,stats}` |
 | `auto_consolidate` | `enable,…` | `{ok}` |
-| `signals` | `providers` | `{ok,providers}` |
-| `backend` | `backend` | `{ok}` |
+| `signals` | `providers` | `{ok,providers}`; each entry may be a name or `{name,weight}` |
+| `backend` | `backend` | `{ok}`; `hybrid` is lexical ∪ local hash-vector candidates |
 | `persist` | `path?,atomic` | `{ok}`; defaults to `~/.meml/state/memory.state` when `path` is omitted |
 | `recover` | `path?` | `{ok}`; defaults to `~/.meml/state/memory.state` when `path` is omitted |
 | `import_meml` | `files` | `{ok,documents,observed,asserted,links}`; atomically imports multiple restricted `.meml` files |
@@ -341,7 +343,10 @@ Enum values:
 - `state`: `active | contested | superseded | archived`
 - `outcome`: `success | failure`
 - `failure_class`: `none | timeout | transport | tool_error | invalid_result | policy_denied | unauthorized | cancelled | unknown`
-- `backend`: `vector | graph`
+- `backend`: `vector | graph | hybrid`
+- `providers` entries may be strings or `{ "name":"embedding", "weight":2 }`; `activate` returns a `provider_trace` with each provider's raw `score` and configured `weight`.
+
+Text matching uses the shared `tokenizer-ascii-v1`: ASCII case normalization with compatible delimiter tokenization. It deliberately does not infer Chinese/CJK segmentation.
 - `providers` (array): `metadata | embedding | reranker | calibrated | neural`
 
 ### 3.3 Multi-source memory import and default storage
