@@ -292,15 +292,17 @@ meml.neural.retrievalProvider()
 
 `meml` 是一个 JSON-lines 桥接：**每行一个 JSON 请求进，每行一个 JSON 响应出**，状态在同一进程内跨请求保留。
 
-### 3.1 三种运行模式
+### 3.1 运行模式与维护命令
 
 | 模式 | 命令 | 说明 |
 |---|---|---|
 | 单请求 | `meml '<json>'` | 处理单个请求后退出，**每次都是全新状态** |
 | 常驻 REPL | `meml`（stdin 逐行） | 状态跨请求保留，适合 agent 常驻子进程 |
 | 文件 | `meml --file reqs.jsonl` | 按行批量处理 |
+| 版本 | `meml version`（也支持 `--version`、`-V`） | 输出当前 CLI 版本 |
+| 升级 | `meml upgrade [vMAJOR.MINOR.PATCH]` | 下载并安装最新版本；可指定 Release 标签 |
 
-响应格式：`{"ok":true,...}` 或 `{"ok":false,"error":"..."}`。
+`upgrade` 复用官方安装器，默认更新到最新 Release；仅支持已发布的语义化版本标签。响应格式：`{"ok":true,...}` 或 `{"ok":false,"error":"..."}`。
 
 ### 3.2 命令表
 

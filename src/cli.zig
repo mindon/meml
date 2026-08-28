@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const build_options = @import("build_options");
 const meml = @import("meml.zig");
 
 const Json = std.json;
@@ -1055,6 +1057,8 @@ fn processReader(state: *State, reader: *std.Io.Reader, writer: *std.Io.Writer) 
     }
 }
 
+const cli_version: []const u8 = build_options.version;
+
 const help_text =
     \\MEML CLI — a JSON-lines bridge to the MEML agent memory runtime.
     \\
@@ -1062,6 +1066,8 @@ const help_text =
     \\  meml                 read JSON requests from stdin (one per line) until EOF
     \\  meml '<json>'        process a single JSON request and exit
     \\  meml --file <path>   read JSON requests from a file (one per line)
+    \\  meml version         print the installed CLI version
+    \\  meml upgrade [tag]   install the latest release or a vMAJOR.MINOR.PATCH tag
     \\
     \\Each request is a JSON object with an "op" field. Each response is one JSON
     \\line: {"ok":true,...} or {"ok":false,"error":"..."}.
@@ -1069,9 +1075,68 @@ const help_text =
     \\Ops: ping observe assert remember infer link unlink support contradict
     \\     transition supersede generalize procedure predict_procedure select_procedures compare_procedures activate feedback
     \\     consolidate auto_consolidate signals backend persist recover import_meml exec
-    \\     set_verifier clear_verifier set_plasticity_policy
+    \\     set_verifier set_attestation_verifier clear_verifier set_plasticity_policy
     \\
 ;
+
+fn isValidReleaseSelector(selector: []const u8) bool {
+    if (std.mem.eql(u8, selector, "latest")) return true;
+    if (selector.len < 2 or selector[0] != 'v') return false;
+    _ = std.SemanticVersion.parse(selector[1..]) catch return false;
+    return true;
+}
+
+fn runUpgrade(allocator: Allocator, io: std.Io, selector: []const u8, writer: *std.Io.Writer) !void {
+    if (!isValidReleaseSelector(selector)) return error.InvalidReleaseSelector;
+
+    const result = switch (builtin.os.tag) {
+        .linux, .macos => try std.process.run(allocator, io, .{
+            .argv = &.{
+                "sh",
+                "-c",
+                "set -eu; if [ -z \"${HOME:-}\" ]; then case \"$(uname -s)\" in Darwin) HOME=\"$(dscl . -read \"/Users/$(id -un)\" NFSHomeDirectory 2>/dev/null | awk 'NR == 1 { print $2 }')\" ;; Linux) HOME=\"$(getent passwd \"$(id -u)\" 2>/dev/null | awk -F: 'NR == 1 { print $6 }')\" ;; esac; export HOME; fi; [ -n \"${HOME:-}\" ] || { printf '%s\\n' 'meml upgrade: cannot determine home directory; set HOME or MEML_INSTALL_DIR' >&2; exit 1; }; curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 https://mindon.dev/meml/install | sh -s -- \"$1\"",
+                "meml-upgrade",
+                selector,
+            },
+            .stdout_limit = .limited(1024 * 1024),
+            .stderr_limit = .limited(1024 * 1024),
+        }),
+        .windows => try std.process.run(allocator, io, .{
+            .argv = &.{
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "& { param([string]$version) irm https://mindon.dev/meml/install.ps1 | iex -args $version }",
+                selector,
+            },
+            .stdout_limit = .limited(1024 * 1024),
+            .stderr_limit = .limited(1024 * 1024),
+        }),
+        else => return error.UnsupportedUpgradePlatform,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try writer.writeAll(result.stdout);
+    try writer.writeAll(result.stderr);
+    if (!result.term.success()) return error.UpgradeFailed;
+}
+
+test "version command accepts only supported release selectors" {
+    try std.testing.expect(isValidReleaseSelector("latest"));
+    try std.testing.expect(isValidReleaseSelector("v0.2.1"));
+    try std.testing.expect(isValidReleaseSelector("v1.2.3-rc.1+build.7"));
+    try std.testing.expect(!isValidReleaseSelector("0.2.1"));
+    try std.testing.expect(!isValidReleaseSelector("v1.2"));
+    try std.testing.expect(!isValidReleaseSelector("v1.2.3;rm -rf /"));
+}
+
+test "CLI version is a semantic version" {
+    _ = try std.SemanticVersion.parse(cli_version);
+}
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
@@ -1094,7 +1159,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var out_writer = &out_file.interface;
 
     if (first) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (std.mem.eql(u8, arg, "version") or std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
+            if (args.next() != null) return error.UnexpectedArgument;
+            try out_writer.print("{s}\n", .{cli_version});
+        } else if (std.mem.eql(u8, arg, "upgrade")) {
+            const selector = args.next() orelse "latest";
+            if (args.next() != null) return error.UnexpectedArgument;
+            try runUpgrade(allocator, io, selector, out_writer);
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try out_writer.writeAll(help_text);
         } else if (std.mem.eql(u8, arg, "--file")) {
             const path = args.next() orelse return error.MissingFile;

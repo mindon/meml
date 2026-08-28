@@ -292,15 +292,17 @@ meml.neural.retrievalProvider()
 
 `meml` is a JSON-lines bridge: **one JSON request in per line, one JSON response out per line**, with state preserved across requests within the same process.
 
-### 3.1 Three run modes
+### 3.1 Run modes and maintenance commands
 
 | Mode | Command | Description |
 |---|---|---|
 | Single request | `meml '<json>'` | Processes a single request and exits; **fresh state each time** |
 | Long-running REPL | `meml` (stdin, line by line) | State persists across requests; ideal for an agent's long-running subprocess |
 | File | `meml --file reqs.jsonl` | Batch processing, line by line |
+| Version | `meml version` (also `--version`, `-V`) | Prints the current CLI version |
+| Upgrade | `meml upgrade [vMAJOR.MINOR.PATCH]` | Downloads and installs the latest version, or a Release tag |
 
-Response format: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
+`upgrade` reuses the official installer and defaults to the latest Release; only published semantic-version tags are accepted. Response format: `{"ok":true,...}` or `{"ok":false,"error":"..."}`.
 
 ### 3.2 Command table
 

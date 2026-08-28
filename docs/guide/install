@@ -10,7 +10,21 @@
 set -eu
 
 REPO="mindon/meml"
-BASE_DIR="${MEML_INSTALL_DIR:-$HOME/.meml}"
+if [ -n "${MEML_INSTALL_DIR:-}" ]; then
+  BASE_DIR="$MEML_INSTALL_DIR"
+else
+  if [ -z "${HOME:-}" ]; then
+    case "$(uname -s)" in
+      Darwin) HOME="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk 'NR == 1 { print $2 }')" ;;
+      Linux) HOME="$(getent passwd "$(id -u)" 2>/dev/null | awk -F: 'NR == 1 { print $6 }')" ;;
+    esac
+  fi
+  if [ -z "${HOME:-}" ]; then
+    printf '%s\n' '[meml] HOME is unset and no home directory could be determined; set HOME or MEML_INSTALL_DIR.' >&2
+    exit 1
+  fi
+  BASE_DIR="$HOME/.meml"
+fi
 BIN_DIR="$BASE_DIR/bin"
 VERSION="${1:-latest}"
 
@@ -77,12 +91,13 @@ tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR"
 mkdir -p "$BIN_DIR"
 install -m 0755 "$TMP_DIR/meml" "$BIN_DIR/meml"
 
-# Smoke test: MEML CLI has no --version flag; --help returns the usage text.
-if "$BIN_DIR/meml" --help >/dev/null 2>&1; then
-  success "Installed meml -> $BIN_DIR/meml"
+# Smoke test: print the installed CLI version.
+if INSTALLED_VERSION="$("$BIN_DIR/meml" version 2>/dev/null)"; then
+    success "Installed meml $INSTALLED_VERSION -> $BIN_DIR/meml"
 else
-  warn "Installed binary but self-check failed. Please inspect $BIN_DIR/meml manually."
+    warn "Installed binary but self-check failed. Please inspect $BIN_DIR/meml manually."
 fi
+
 
 # ---------- add to PATH ----------
 add_path_line() {

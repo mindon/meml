@@ -13,7 +13,11 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Repo = "mindon/meml"
-$BaseDir = if ($env:MEML_INSTALL_DIR) { $env:MEML_INSTALL_DIR } else { Join-Path $HOME ".meml" }
+$HomeDir = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath("UserProfile") }
+if (-not $HomeDir -and -not $env:MEML_INSTALL_DIR) {
+    throw "Cannot determine the home directory. Set HOME, USERPROFILE, or MEML_INSTALL_DIR."
+}
+$BaseDir = if ($env:MEML_INSTALL_DIR) { $env:MEML_INSTALL_DIR } else { Join-Path $HomeDir ".meml" }
 $BinDir = Join-Path $BaseDir "bin"
 
 function Info($msg)  { Write-Host "[meml] " -NoNewline -ForegroundColor Cyan; Write-Host $msg }
@@ -47,8 +51,13 @@ try {
         Error "meml.exe not found in the downloaded archive."
         exit 1
     }
-    Copy-Item -Path $Exe.FullName -Destination (Join-Path $BinDir "meml.exe") -Force
-    Success "Installed meml -> $(Join-Path $BinDir 'meml.exe')"
+    $InstalledBinary = Join-Path $BinDir "meml.exe"
+    Copy-Item -Path $Exe.FullName -Destination $InstalledBinary -Force
+    $InstalledVersion = & $InstalledBinary version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed binary self-check failed."
+    }
+    Success "Installed meml $InstalledVersion -> $InstalledBinary"
 }
 finally {
     Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue

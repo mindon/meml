@@ -3,6 +3,9 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const version = b.option([]const u8, "version", "MEML CLI version") orelse "0.2.1";
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
 
     const example = b.addExecutable(.{
         .name = "meml-example",
@@ -61,16 +64,28 @@ pub fn build(b: *std.Build) void {
     const demo_step = b.step("demo", "Run the MEML end-to-end demo (examples/demo.meml)");
     demo_step.dependOn(&demo_run.step);
 
+    const cli_module = b.createModule(.{
+        .root_source_file = b.path("src/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    cli_module.addOptions("build_options", build_options);
     const exe = b.addExecutable(.{
         .name = "meml",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cli.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = cli_module,
     });
     b.installArtifact(exe);
     const cli_run = b.addRunArtifact(exe);
     const cli_step = b.step("run", "Run the MEML JSON-lines CLI (see src/cli.zig for the request protocol)");
     cli_step.dependOn(&cli_run.step);
+
+    const cli_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    cli_test_module.addOptions("build_options", build_options);
+    const cli_tests = b.addTest(.{ .root_module = cli_test_module });
+    const cli_test_run = b.addRunArtifact(cli_tests);
+    test_step.dependOn(&cli_test_run.step);
 }
