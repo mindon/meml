@@ -1,5 +1,46 @@
 pub const Kind = enum { experience, evidence, claim, memory, belief, concept, procedure, context };
-pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes };
+pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes, verifies, supersedes };
+
+/// IEL classifies the epistemic role of information without imposing domain
+/// entities on the kernel. A conventional memory is simply retained information.
+pub const InformationKind = enum { fact, claim, observation, hypothesis, policy, preference, decision, procedure };
+pub const Trust = enum { unverified, asserted, corroborated, verified, revoked };
+pub const Retention = enum { ephemeral, session, working, long_term, archived };
+
+/// Bitemporal, provenance-bearing metadata for a semantic node. `observed_at`
+/// is when MEML learned it; `valid_from`/`valid_until` describe when the claim
+/// is applicable in the modeled world.
+pub const InformationRecord = struct {
+    node: u64,
+    kind: InformationKind,
+    trust: Trust,
+    retention: Retention,
+    source: []const u8,
+    observed_at: i64,
+    valid_from: i64,
+    valid_until: ?i64 = null,
+};
+
+/// Immutable IEL ledger entries describe how the materialized information graph
+/// changed. They never execute host actions or embed domain-specific semantics.
+pub const EvolutionKind = enum { observe, assert, derive, corroborate, contradict, supersede, expire, revoke, archive, decision, feedback };
+pub const EvolutionEvent = struct {
+    id: u64,
+    kind: EvolutionKind,
+    target: u64,
+    related: ?u64 = null,
+    timestamp: i64,
+    source: []const u8,
+    reason: []const u8,
+};
+
+/// A decision records only which information was relied upon. The host owns
+/// the action and authorization; IEL keeps an auditable dependency edge.
+pub const DecisionDependency = struct { decision: u64, information: u64, timestamp: i64 };
+
+/// A read-only verification candidate: IEL suggests what could reduce material
+/// uncertainty but never performs verification or an external action itself.
+pub const VerificationCandidate = struct { information: u64, priority: f64, reason: []const u8 };
 
 /// Lifecycle state for every cognitive record. It is intentionally domain
 /// neutral: the host owns actions while MEML controls only memory dynamics.

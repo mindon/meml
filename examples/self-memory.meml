@@ -41,6 +41,15 @@ assert meml provides-verified-audited-cognitive-state-transitions dynamics capab
 assert meml derives-stability-attractors-and-bounded-state-propagation dynamics capability confidence 0.99 as dynamics_stability
 assert meml revision-cas rejects-stale-writers durability confidence 0.99 as cas
 
+# 信息演化门面：IEL 仅通过 Zig 库 API 暴露，不新增 .meml 或 CLI 命令。
+assert meml iel-facade records-information-kind-trust-retention-source-and-bitemporal-validity capability architecture confidence 0.99 as iel_metadata
+assert meml iel-ledger appends-immutable-evolution-events-and-maintains-a-current-materialized-information-view durability confidence 0.99 as iel_ledger
+assert meml iel-decision records-information-dependencies-without-authorizing-or-executing-actions boundary confidence 0.99 as iel_decision_boundary
+assert meml iel-feedback writes-host-verified-outcomes-back-as-evidence-and-evolution-events safety confidence 0.99 as iel_feedback
+assert meml iel-verification-candidates rank-read-only-review-work-and-never-verify-or-execute-actions safety confidence 0.99 as iel_verification_boundary
+assert meml meml15 persists-iel-metadata-events-and-decision-dependencies-and-revalidates-the-materialized-view-on-recovery durability confidence 0.99 as iel_snapshot
+assert meml iel-recovery does-not-rebuild-the-runtime-by-general-event-replay boundary confidence 0.99 as iel_event_sourcing_boundary
+
 # 默认 observe 只记录经验；整合路径形成长期结构。
 assert meml default-observe keeps-derived-structure-unchanged lifecycle confidence 0.99 as observe_boundary
 assert meml consolidation derives-memory-belief-concept-procedure-and-artifacts lifecycle confidence 0.99 as consolidation
@@ -74,6 +83,13 @@ link signal_weights supports provider_trace weight 1
 link trace_capacity supports provider_trace weight 1
 link model_boundary supports embedding_boundary weight 1
 link meml15 supports durable_state weight 1
+link iel_metadata supports durable_state weight 1
+link iel_ledger supports durable_state weight 1
+link iel_snapshot supports durable_state weight 1
+link iel_feedback supports trusted_feedback weight 1
+link iel_decision_boundary supports safety weight 1
+link iel_verification_boundary supports safety weight 1
+link iel_event_sourcing_boundary supports iel_ledger weight 1
 link durable_state supports safety weight 1
 link dynamic_kernel supports kernel weight 1
 link dynamics_stability supports dynamic_kernel weight 1

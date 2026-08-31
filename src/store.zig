@@ -17,9 +17,12 @@ pub const Store = struct {
     metric_records: std.ArrayList(model.MetricRecord),
     artifact_records: std.ArrayList(model.ArtifactRecord),
     structure_records: std.ArrayList(model.StructureRecord),
+    information_records: std.ArrayList(model.InformationRecord),
+    evolution_events: std.ArrayList(model.EvolutionEvent),
+    decision_dependencies: std.ArrayList(model.DecisionDependency),
 
     pub fn init(allocator: std.mem.Allocator) Store {
-        return .{ .allocator = allocator, .nodes = .empty, .relations = .empty, .consolidations = .empty, .fingerprint_groups = .empty, .fingerprint_members = .empty, .neural_states = .empty, .learned_signals = .empty, .feedback_records = .empty, .attestation_replays = .empty, .transition_records = .empty, .scoped_records = .empty, .metric_records = .empty, .artifact_records = .empty, .structure_records = .empty };
+        return .{ .allocator = allocator, .nodes = .empty, .relations = .empty, .consolidations = .empty, .fingerprint_groups = .empty, .fingerprint_members = .empty, .neural_states = .empty, .learned_signals = .empty, .feedback_records = .empty, .attestation_replays = .empty, .transition_records = .empty, .scoped_records = .empty, .metric_records = .empty, .artifact_records = .empty, .structure_records = .empty, .information_records = .empty, .evolution_events = .empty, .decision_dependencies = .empty };
     }
 
     pub fn deinitNode(allocator: std.mem.Allocator, entry: model.Node) void {
@@ -74,6 +77,14 @@ pub const Store = struct {
             self.allocator.free(record.structure.fingerprint);
         }
         self.structure_records.deinit(self.allocator);
+        for (self.information_records.items) |record| self.allocator.free(record.source);
+        self.information_records.deinit(self.allocator);
+        for (self.evolution_events.items) |event| {
+            self.allocator.free(event.source);
+            self.allocator.free(event.reason);
+        }
+        self.evolution_events.deinit(self.allocator);
+        self.decision_dependencies.deinit(self.allocator);
     }
 
     fn cloneNode(allocator: std.mem.Allocator, entry: model.Node) !model.Node {
@@ -135,6 +146,9 @@ pub const Store = struct {
         for (self.metric_records.items) |record| try out.addMetric(record.node, record.metric);
         for (self.artifact_records.items) |record| try out.addArtifact(record.node, record.artifact);
         for (self.structure_records.items) |record| try out.setStructure(record.node, record.structure);
+        for (self.information_records.items) |record| try out.recordInformation(record);
+        for (self.evolution_events.items) |event| try out.recordEvolutionEvent(event);
+        try out.decision_dependencies.appendSlice(allocator, self.decision_dependencies.items);
         return out;
     }
 
@@ -293,6 +307,52 @@ pub const Store = struct {
         const receipt = try self.allocator.dupe(u8, input.receipt);
         errdefer self.allocator.free(receipt);
         try self.feedback_records.append(self.allocator, .{ .evidence = input.evidence, .target = input.target, .outcome = input.outcome, .failure_class = input.failure_class, .actor = actor, .receipt = receipt });
+    }
+
+    pub fn information(self: *const Store, information_id: u64) ?model.InformationRecord {
+        for (self.information_records.items) |record| if (record.node == information_id) return record;
+        return null;
+    }
+
+    pub fn recordInformation(self: *Store, input: model.InformationRecord) !void {
+        if (self.constNode(input.node) == null or input.source.len == 0 or input.source.len > 512 or input.valid_until != null and input.valid_until.? < input.valid_from) return error.InvalidInformation;
+        if (self.information(input.node) != null) return error.DuplicateInformation;
+        const source = try self.allocator.dupe(u8, input.source);
+        errdefer self.allocator.free(source);
+        try self.information_records.append(self.allocator, .{ .node = input.node, .kind = input.kind, .trust = input.trust, .retention = input.retention, .source = source, .observed_at = input.observed_at, .valid_from = input.valid_from, .valid_until = input.valid_until });
+    }
+
+    pub fn setInformationTrust(self: *Store, information_id: u64, trust: model.Trust) !void {
+        for (self.information_records.items) |*record| if (record.node == information_id) {
+            record.trust = trust;
+            return;
+        };
+        return error.UnknownInformation;
+    }
+
+    pub fn setInformationRetention(self: *Store, information_id: u64, retention: model.Retention) !void {
+        for (self.information_records.items) |*record| if (record.node == information_id) {
+            record.retention = retention;
+            return;
+        };
+        return error.UnknownInformation;
+    }
+
+    pub fn recordEvolutionEvent(self: *Store, input: model.EvolutionEvent) !void {
+        if (input.id == 0 or self.constNode(input.target) == null or (input.related != null and self.constNode(input.related.?) == null) or input.source.len == 0 or input.source.len > 512 or input.reason.len == 0 or input.reason.len > 512) return error.InvalidEvolutionEvent;
+        if (self.evolution_events.items.len > 0 and input.id <= self.evolution_events.items[self.evolution_events.items.len - 1].id) return error.InvalidEvolutionEvent;
+        const source = try self.allocator.dupe(u8, input.source);
+        errdefer self.allocator.free(source);
+        const reason = try self.allocator.dupe(u8, input.reason);
+        errdefer self.allocator.free(reason);
+        try self.evolution_events.append(self.allocator, .{ .id = input.id, .kind = input.kind, .target = input.target, .related = input.related, .timestamp = input.timestamp, .source = source, .reason = reason });
+    }
+
+    pub fn recordDecisionDependency(self: *Store, input: model.DecisionDependency) !void {
+        const decision = self.constNode(input.decision) orelse return error.UnknownDecision;
+        if (decision.kind != .context or self.constNode(input.information) == null) return error.InvalidDecisionDependency;
+        for (self.decision_dependencies.items) |existing| if (existing.decision == input.decision and existing.information == input.information) return error.DuplicateDecisionDependency;
+        try self.decision_dependencies.append(self.allocator, input);
     }
 
     pub fn hasAttestationReplay(self: *const Store, digest: [32]u8) bool {
@@ -459,6 +519,20 @@ pub const Store = struct {
         for (self.transition_records.items) |record| {
             if (record.id == 0 or record.id <= previous_transition or self.constNode(record.target) == null or (record.cause != null and self.constNode(record.cause.?) == null) or !validScaled(record.prior_confidence) or !validScaled(record.next_confidence) or !validScaled(record.prior_strength) or !validScaled(record.next_strength) or record.prior_confidence < 0 or record.prior_confidence > 1 or record.next_confidence < 0 or record.next_confidence > 1 or record.prior_strength < 0 or record.prior_strength > 1 or record.next_strength < 0 or record.next_strength > 1 or !validText(record.reason, 512) or !validText(record.actor, 128) or !validText(record.receipt, 512)) return error.BadFile;
             previous_transition = record.id;
+        }
+        for (self.information_records.items, 0..) |record, index| {
+            if (self.constNode(record.node) == null or !validText(record.source, 512) or (record.valid_until != null and record.valid_until.? < record.valid_from)) return error.BadFile;
+            for (self.information_records.items[index + 1 ..]) |other| if (other.node == record.node) return error.BadFile;
+        }
+        var previous_event: u64 = 0;
+        for (self.evolution_events.items) |event| {
+            if (event.id == 0 or event.id <= previous_event or self.constNode(event.target) == null or (event.related != null and self.constNode(event.related.?) == null) or !validText(event.source, 512) or !validText(event.reason, 512)) return error.BadFile;
+            previous_event = event.id;
+        }
+        for (self.decision_dependencies.items, 0..) |dependency, index| {
+            const decision = self.constNode(dependency.decision) orelse return error.BadFile;
+            if (decision.kind != .context or self.constNode(dependency.information) == null) return error.BadFile;
+            for (self.decision_dependencies.items[index + 1 ..]) |other| if (other.decision == dependency.decision and other.information == dependency.information) return error.BadFile;
         }
     }
 };

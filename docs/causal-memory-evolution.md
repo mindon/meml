@@ -52,7 +52,7 @@ Agent 可先按 `Context` 检索候选策略、工具偏好或过程，再调用
 
 ## 保存与恢复的状态
 
-`MEML15` 保存语义节点、通用结构化范围/指标/制品/结构身份、关系、推导记录、指纹组及成员、信念生命周期字段、确定性 `NeuralState`、学习型 signal 的版本化权重与偏置、经过验证的反馈审计记录，以及单调递增的提交 revision。加载器只接受完整、严格且规范排序的 `MEML15` 记录；旧格式返回 `UnsupportedVersion`，不提供迁移、双写或兼容读取。节点 ID、图引用、指标范围、制品摘要、指纹计数、神经 artifact、反馈 evidence/target/receipt 和 provider 状态均需通过校验；恢复时会以 revision 选择比目标更新的有效 journal，并从语义记录重建 provider 索引。
+`MEML15` 保存语义节点、通用结构化范围/指标/制品/结构身份、关系、推导记录、指纹组及成员、信念生命周期字段、IEL 信息元数据/单调演化事件/决策依赖、确定性 `NeuralState`、学习型 signal 的版本化权重与偏置、经过验证的反馈审计记录，以及单调递增的提交 revision。加载器只接受完整、严格且规范排序的 `MEML15` 记录；旧格式返回 `UnsupportedVersion`，不提供迁移、双写或兼容读取。节点 ID、图引用、IEL 事件引用与单调性、指标范围、制品摘要、指纹计数、神经 artifact、反馈 evidence/target/receipt 和 provider 状态均需通过校验；恢复时会以 revision 选择比目标更新的有效 journal，并从语义记录重建 provider 索引。IEL 的事件与物化视图一致性由 `verifyMaterializedView()` 校验；它不是从完整事件流重放全部运行时状态的通用事件溯源模型。
 
 确定性 neural artifact 会创建包含 artifact ID、activation count、strength 和版本的 `NeuralState`。该状态在恢复后仍被参考神经检索 provider 使用，测试会比较有无该状态时的检索信号。`calibrated` provider 则消费持久化的透明参数，仍由内核控制最终排序与解释。`ArtifactManifest` 可将 provider、模型版本、字节数和 SHA-256 引用转换为规范化 scopes、metric 与通用 artifact，因此这些元数据会随语义记录恢复；MEML 不读取 locator、不传输 blob，也不保存模型权重或 checkpoint 二进制。
 

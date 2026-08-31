@@ -20,10 +20,11 @@ MEML 是一个面向 Agent 的可编程记忆运行时。它将经验、证据�
 
 - **可解释检索**：每项激活都携带语义、词法、时间、图关系、过程、偏好、目标、置信度、作用域、指标、结构、谱系和冲突等信号分解，并附带每个外部 provider 的原始分数与权重。
 - **通用结构化证据**：记录可携带版本化范围、带单位和不确定性的指标、内容寻址制品与结构指纹；`derived_from` 统一表达可追溯谱系。
+- **信息演化账本（IEL）**：Zig 库门面 `meml.iel.Evolution` 为语义节点附加信息类别、信任、保留、来源、观测时间与有效区间；它追加不可变演化事件，并保存决策依赖以供审计。
 - **稳定的内核边界**：provider 仅产生候选 ID；领域 adapter 仅规范化输入与信号；内核负责身份、评分、顺序、数量限制、矛盾处理和解释。
 - **动态认知状态**：所有认知记录可处于 active、contested、superseded 或 archived 状态；经宿主验证的有限 transition 会留下包含前后状态、来源和证明的不可变审计记录，并改变未来激活条件。可配置 `PlasticityPolicy`、派生稳定性/吸引子指标、截止时间过程预测、显式候选质量门和多目标保守比较均保持可解释。
 - **可控整合**：可显式全量或增量整合，也可为后续观察开启事件触发整合；策略可分别控制 memory、belief、concept、procedure 和 neural 规则。
-- **可恢复状态**：唯一支持的 `MEML15` 保存图、结构化范围/指标/制品/结构身份、通用认知生命周期、不可变状态转移审计、推导来源、确定性 `NeuralState`、版本化 signal 校准参数和已验证反馈回执及已消费签名证明摘要。旧格式明确拒绝；语义 revision 与索引 checkpoint journal 绑定，恢复时重建派生索引。
+- **可恢复状态**：唯一支持的 `MEML15` 保存图、结构化范围/指标/制品/结构身份、通用认知生命周期、不可变状态转移审计、IEL 信息元数据/演化事件/决策依赖、推导来源、确定性 `NeuralState`、版本化 signal 校准参数和已验证反馈回执及已消费签名证明摘要。旧格式明确拒绝；语义 revision 与索引 checkpoint journal 绑定，恢复时重建派生索引并可验证 IEL 物化视图一致性。
 - **可复现验证**：内置端到端、冲突、持久化、回滚、恢复、provider 一致性和规模路径测试；基准程序使用确定性数据集并输出检索质量指标。
 
 ## 当前架构
@@ -61,8 +62,9 @@ Runtime ────────> indexed symbolic backend (default)
 - `evaluateAgentSuite()` 覆盖多任务与上下文漂移；`evaluateAnnotatedTasks()` 支持多标签分级相关性，`zig build eval` 执行冻结的 `retrieval-v1` 数据集与 Recall/MRR/NDCG CI 基线。
 - 使用 journal 与单调 revision 恢复中断的本地原子写入，并通过本地 `VersionedProvider` CAS 拒绝陈旧写者竞争。
 - 持久化、恢复并用于检索的确定性 `NeuralState`，以及 `calibrated` provider 的版本化权重与偏置；它们是透明参考状态，不是训练模型参数。
+- 通过 Zig 库 `meml.iel.Evolution` 记录观察、声明、推导、佐证、矛盾、替代、归档/撤销、决策依赖与经宿主验证的反馈；`verificationCandidates()` 仅排序待复核项，不验证来源、调用工具或执行 Action。
 
-有关整合、持久化和边界条件的行为说明见 [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md)。量子、AI for Science 和普通 Agent 共用的结构化模型、adapter 边界与 JSON-lines 示例见 [`docs/domain-memory.md`](docs/domain-memory.md)。动态认知状态、受限 transition、可审计回放和 state-aware activation 见 [`docs/dynamic-memory.md`](docs/dynamic-memory.md)。
+有关整合、持久化和边界条件的行为说明见 [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md)。IEL 的信息模型、账本、决策闭环与非纯事件溯源边界见 [`docs/information-evolution.md`](docs/information-evolution.md)。量子、AI for Science 和普通 Agent 共用的结构化模型、adapter 边界与 JSON-lines 示例见 [`docs/domain-memory.md`](docs/domain-memory.md)。动态认知状态、受限 transition、可审计回放和 state-aware activation 见 [`docs/dynamic-memory.md`](docs/dynamic-memory.md)。
 
 ## 快速使用
 
@@ -111,6 +113,7 @@ zig build bench -Doptimize=ReleaseFast
 - 索引 checkpoint journal 仅保存语义 revision 与节点清单，用于拒绝陈旧派生缓存；恢复仍重建 token/vector 索引，尚未持久化完整索引结构。
 - `persist()` 默认使用本地 journal 原子写入。宿主 `storage.Remote.Transport` 现支持 revision CAS 与通过 `Runtime.recoverFrom()` 的语义快照恢复；远端快照会重新校验并在本地重建派生索引。认证、TLS、端点 allowlist、命名空间授权、幂等重试、目录元数据 fsync 以及绕过 API 的锁协作仍由宿主负责。
 - 自动整合是 opt-in；默认观察路径保持 retrieval-only，以避免隐式改变既有调用方的记忆结构。
+- IEL 当前只通过 Zig 库 `meml.iel.Evolution` 暴露，`.meml` DSL 与 JSON-lines CLI 尚无 IEL 专用语句或操作。它持久化不可变演化事件和当前物化视图，但不是从完整事件流重建运行时的通用事件溯源系统。
 
 ## 后续路线
 

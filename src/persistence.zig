@@ -162,6 +162,19 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         defer store.allocator.free(receipt);
         try writer.interface.print("X|{d}|{d}|{d}|{s}|{s}|{s}|{d}|{d}|{d}|{d}|{d}|{s}|{s}|{s}\n", .{ record.id, record.target, record.cause orelse 0, @tagName(record.kind), @tagName(record.prior_state), @tagName(record.next_state), @as(i64, @intFromFloat(record.prior_confidence * 1_000_000)), @as(i64, @intFromFloat(record.next_confidence * 1_000_000)), @as(i64, @intFromFloat(record.prior_strength * 1_000_000)), @as(i64, @intFromFloat(record.next_strength * 1_000_000)), record.timestamp, reason, actor, receipt });
     }
+    for (store.information_records.items) |record| {
+        const source = try encode(store.allocator, record.source);
+        defer store.allocator.free(source);
+        try writer.interface.print("I|{d}|{s}|{s}|{s}|{s}|{d}|{d}|{d}\n", .{ record.node, @tagName(record.kind), @tagName(record.trust), @tagName(record.retention), source, record.observed_at, record.valid_from, record.valid_until orelse -1 });
+    }
+    for (store.evolution_events.items) |event| {
+        const source = try encode(store.allocator, event.source);
+        defer store.allocator.free(source);
+        const reason = try encode(store.allocator, event.reason);
+        defer store.allocator.free(reason);
+        try writer.interface.print("E|{d}|{s}|{d}|{d}|{d}|{s}|{s}\n", .{ event.id, @tagName(event.kind), event.target, event.related orelse 0, event.timestamp, source, reason });
+    }
+    for (store.decision_dependencies.items) |dependency| try writer.interface.print("D|{d}|{d}|{d}\n", .{ dependency.decision, dependency.information, dependency.timestamp });
     try writer.interface.flush();
 }
 
@@ -399,6 +412,36 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
             defer allocator.free(receipt);
             try finish(&fields);
             try loaded.store.recordTransition(.{ .id = id, .target = target, .cause = if (raw_cause == 0) null else raw_cause, .kind = kind, .prior_state = prior_state, .next_state = next_state, .prior_confidence = prior_confidence, .next_confidence = next_confidence, .prior_strength = prior_strength, .next_strength = next_strength, .timestamp = timestamp, .reason = reason, .actor = actor, .receipt = receipt });
+        } else if (std.mem.eql(u8, tag, "I")) {
+            const node = try integer(u64, fields.next());
+            const kind = try enumValue(model.InformationKind, fields.next());
+            const trust = try enumValue(model.Trust, fields.next());
+            const retention = try enumValue(model.Retention, fields.next());
+            const source = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(source);
+            const observed_at = try integer(i64, fields.next());
+            const valid_from = try integer(i64, fields.next());
+            const raw_valid_until = try integer(i64, fields.next());
+            try finish(&fields);
+            try loaded.store.recordInformation(.{ .node = node, .kind = kind, .trust = trust, .retention = retention, .source = source, .observed_at = observed_at, .valid_from = valid_from, .valid_until = if (raw_valid_until < 0) null else raw_valid_until });
+        } else if (std.mem.eql(u8, tag, "E")) {
+            const id = try integer(u64, fields.next());
+            const kind = try enumValue(model.EvolutionKind, fields.next());
+            const target = try integer(u64, fields.next());
+            const raw_related = try integer(u64, fields.next());
+            const timestamp = try integer(i64, fields.next());
+            const source = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(source);
+            const reason = try decode(allocator, fields.next() orelse return error.BadFile);
+            defer allocator.free(reason);
+            try finish(&fields);
+            try loaded.store.recordEvolutionEvent(.{ .id = id, .kind = kind, .target = target, .related = if (raw_related == 0) null else raw_related, .timestamp = timestamp, .source = source, .reason = reason });
+        } else if (std.mem.eql(u8, tag, "D")) {
+            const decision = try integer(u64, fields.next());
+            const information = try integer(u64, fields.next());
+            const timestamp = try integer(i64, fields.next());
+            try finish(&fields);
+            try loaded.store.recordDecisionDependency(.{ .decision = decision, .information = information, .timestamp = timestamp });
         } else return error.BadFile;
     }
     try loaded.store.validate();

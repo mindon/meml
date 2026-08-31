@@ -19,10 +19,11 @@ Semantics and ranking are controlled by a single kernel; indexes, external signa
 ## Key Benefits
 
 - **Explainable retrieval**: every activation carries semantic, lexical, temporal, graph, procedural, preference, goal, confidence, scope, metric, structure, lineage, stability, and conflict contributions plus raw score and weight for each external provider; graph propagation is bounded by the kernel and cognitive state.
+- **Information-evolution ledger (IEL)**: the Zig-library façade `meml.iel.Evolution` attaches information kind, trust, retention, source, observed time, and validity interval to semantic nodes; it appends immutable evolution events and preserves decision dependencies for audit.
 - **Stable kernel boundary**: providers only produce candidate IDs; the kernel owns identity, scoring, ordering, limits, conflict handling, and explanations.
 - **Dynamic cognitive state**: every cognitive record can be active, contested, superseded, or archived. Host-verified bounded transitions persist an immutable audit trail and change future activation conditions; configurable `PlasticityPolicy`, derived stability/attractor state, cutoff-based procedure forecasts, explicit-candidate quality gates, and conservative multi-objective comparisons remain explainable.
 - **Controlled consolidation**: consolidate explicitly in full or incrementally, or enable event-triggered consolidation for later observations; policies control memory, belief, concept, procedure, and neural rules independently.
-- **Recoverable state**: the only supported `MEML15` format saves the graph, structured scopes/metrics/artifacts/structure identity, general cognitive lifecycle, immutable transition audit, derivation provenance, deterministic `NeuralState`, versioned signal calibration parameters, verified feedback receipts, and consumed signed-attestation digests. Old formats are explicitly rejected; recovery rebuilds derived indexes from the semantic revision.
+- **Recoverable state**: the only supported `MEML15` format saves the graph, structured scopes/metrics/artifacts/structure identity, general cognitive lifecycle, immutable transition audit, IEL information metadata/evolution events/decision dependencies, derivation provenance, deterministic `NeuralState`, versioned signal calibration parameters, verified feedback receipts, and consumed signed-attestation digests. Old formats are explicitly rejected; recovery rebuilds derived indexes from the semantic revision and can verify IEL materialized-view consistency.
 - **Reproducible verification**: built-in end-to-end, conflict, persistence, rollback, recovery, provider-consistency, and scale-path tests; the benchmark program uses deterministic datasets and reports retrieval-quality metrics.
 
 ## Current Architecture
@@ -60,8 +61,9 @@ Runtime ────────> indexed symbolic backend (default)
 - `evaluateAgentSuite()` covers multi-task and context drift; `evaluateAnnotated()` accepts human-annotated sets with task IDs and graded relevance, and can enforce Recall/MRR/NDCG quality gates.
 - Recover interrupted local atomic writes using a journal and a monotonic revision, and reject stale writers through the local `VersionedProvider` CAS.
 - Persist, recover, and retrieve the deterministic `NeuralState`, and versioned weights and biases for `calibrated` providers; these are transparent reference states, not trained model parameters.
+- Use the Zig-library `meml.iel.Evolution` to record observations, declarations, derivations, corroboration, contradictions, supersession, archival/revocation, decision dependencies, and host-verified feedback. `verificationCandidates()` only ranks review work; it never verifies sources, calls tools, or executes Actions.
 
-See [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md) for behavior notes on consolidation, persistence, and boundary conditions. [`docs/domain-memory.md`](docs/domain-memory.md) describes the shared structured model, adapter boundary, and JSON-lines examples for quantum, AI for Science, and ordinary agents. [`docs/dynamic-memory.md`](docs/dynamic-memory.md) describes cognitive state, bounded transitions, auditable replay, and state-aware activation.
+See [`docs/causal-memory-evolution.md`](docs/causal-memory-evolution.md) for behavior notes on consolidation, persistence, and boundary conditions. [`docs/information-evolution.md`](docs/information-evolution.md) documents the IEL model, ledger, decision loop, and non-event-sourcing boundary. [`docs/domain-memory.md`](docs/domain-memory.md) describes the shared structured model, adapter boundary, and JSON-lines examples for quantum, AI for Science, and ordinary agents. [`docs/dynamic-memory.md`](docs/dynamic-memory.md) describes cognitive state, bounded transitions, auditable replay, and state-aware activation.
 
 ## Quick Start
 
@@ -104,6 +106,7 @@ The public entry point is `src/meml.zig`; the core API lives on `Runtime`:
 - The index checkpoint journal only saves the semantic revision and node manifest to reject stale derived caches; recovery still rebuilds token/vector indexes and does not yet persist the full index structure.
 - `persist()` defaults to local journal atomic writes. Host-provided `storage.Remote.Transport` now supports revision CAS plus semantic snapshot recovery via `Runtime.recoverFrom()`; remote snapshots are revalidated and rebuild derived indexes locally. Authentication, TLS, endpoint allowlists, namespace authorization, idempotent retry, directory-metadata fsync, and lock cooperation that bypasses the API remain host responsibilities.
 - Automatic consolidation is opt-in; the default observation path stays retrieval-only to avoid implicitly changing existing callers' memory structures.
+- IEL is currently exposed only through the Zig-library `meml.iel.Evolution`; the `.meml` DSL and JSON-lines CLI have no IEL-specific statements or operations. It persists immutable evolution events beside a current materialized view, not a general event-sourcing runtime rebuilt from a complete event stream.
 
 ## Roadmap
 

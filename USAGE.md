@@ -131,7 +131,36 @@ _ = id;
 
 `science.Generic.adapter()` 提供同一通用校验边界；`quantum.adapter()` 仅是可选的量子输入规范化示例。二者均不能直接写 `Store`。详见 [`docs/domain-memory.md`](docs/domain-memory.md)。
 
-### 2.4 动态认知状态
+### 2.4 信息演化门面（IEL）
+
+`meml.iel.Evolution` 是仅供 Zig 库使用的信息演化门面。它不取代 `Runtime` 或检索内核，而是为已写入的语义节点补充信息类别、信任、保留策略、来源、观测时间和事实有效区间；并记录不可变演化事件与决策依赖。
+
+```zig
+var evolution = meml.iel.Evolution.init(&runtime);
+const observation = try evolution.observe(.{
+    .record = .{ .kind = .experience, .subject = "service", .predicate = "latency", .object = "high", .context = "release", .timestamp = 10, .confidence = 0.4 },
+    .kind = .observation,
+    .trust = .unverified,
+    .retention = .working,
+    .source = "telemetry",
+    .valid_from = 10,
+    .valid_until = 20,
+});
+
+var review = try evolution.verificationCandidates(21, a);
+defer review.deinit(a); // 过期、矛盾、未验证来源或低置信度的只读复核候选
+_ = observation;
+```
+
+- `observe()`、`declare()` 与 `derive()` 分别记录观察、声明和谱系推导；`corroborate()` 与 `contradict()` 保留证据关系而不静默覆盖信息。
+- `supersede()`、`changeLifecycle()` 仍要求既有 `TransitionVerifier`；IEL 不会绕过宿主对状态变更的授权。
+- `recordDecision()` 仅审计一个决策依赖哪些信息，既不挑选也不执行宿主 Action；`recordFeedback()` 仅在底层反馈验证边界接受结果后追加 evidence 和演化事件。
+- `verificationCandidates()` 只读地排序复核工作，不验证来源、不调用工具、不执行 Action。
+- `persist()` 会将 IEL 信息元数据、演化事件与决策依赖写入 `MEML15`；恢复后可调用 `verifyMaterializedView()` 校验其与当前物化视图一致。它不是通用事件重放器，不能从完整外部历史重建运行时。
+
+当前 `.meml` DSL 与 JSON-lines CLI 没有 IEL 专用语句或操作。详见 [`docs/information-evolution.md`](docs/information-evolution.md)。
+
+### 2.5 动态认知状态
 
 MEML 只改变可审计的记忆状态，不直接选择或执行宿主 Action。宿主必须先安装 `TransitionVerifier`，再调用受限的 `transition()`；每次变更都会以 `TransitionRecord` 持久化在 `MEML15` 中。
 
@@ -155,17 +184,17 @@ defer audit.deinit(a);
 
 受限 DSL：`transition <label> reinforce|penalize|decay|stabilize <0..1> actor <actor> receipt <receipt> at <timestamp> reason <reason>`；`set_state` 则将数值替换为 `active|contested|superseded|archived`。详见 [`docs/dynamic-memory.md`](docs/dynamic-memory.md) 和 [`examples/dynamic-memory.jsonl`](examples/dynamic-memory.jsonl)。
 
-### 2.5 签名反馈证明
+### 2.6 签名反馈证明
 
 对于会影响长期记忆的执行反馈，应优先使用 Ed25519 证明而非兼容回调。仅通过 `setFeedbackAttestationPolicy` 安装宿主公钥；`FeedbackAttestation` 签名的规范化载荷会绑定 issuer/key ID、nonce、签发与过期时间、反馈字段、不透明 receipt 引用，以及目标节点的所有语义字段。有效证明的 issuer 必须与 actor 一致，且必须同时满足事件时间与运行时逻辑时钟的有效期。MEML 仅把已接受载荷的 SHA-256 摘要和过期时间持久化到 `MEML15`，因此恢复后仍会拒绝重放；不会保存 nonce、签名或私钥。
 
 CLI 宿主通过 `set_attestation_verifier` 配置 Base64 编码的公钥，并在 `feedback.attestation` 提供 Base64 编码的 64 字节签名。`receipt` 必须是不透明引用而不是凭据。`clear_verifier` 会同时清除旧回调与签名证明策略；`recover` 后必须重新安装公钥配置。
 
-### 2.6 冻结检索评测
+### 2.7 冻结检索评测
 
 `zig build eval` 会加载 `eval/datasets/retrieval-v1/seed.jsonl`，通过稳定的 `record_key` 解析 `annotations.jsonl` 中的人工标签，并与 `eval/baselines/retrieval-v1.json` 比较多标签 Recall@K、MRR 和分级 NDCG。输出 JSON 报告是确定性的；CI 会在每次 push 和 PR 上执行该质量门。数据集更新必须新建版本目录并经人工审阅基线，不得改写既有 benchmark。
 
-### 2.7 Procedure 选择质量门
+### 2.8 Procedure 选择质量门
 
 `selectProcedures()` 只对宿主显式给定的 procedure ID 做只读比较，不会检索、扩张候选或执行 Action。gate 要求 active 状态、严格 scope 匹配、稳定性、verified outcome 样本数、成功概率和证据覆盖度均达标；不达标项保留拒绝原因，但没有排名。
 
@@ -182,7 +211,7 @@ defer choices.deinit(a);
 
 `predictProcedureAt()` 适合带 cutoff 的历史预测评估；`selectProcedures()` 则只使用当前认知状态，避免把未来状态混入历史选择回放。JSONL 示例见 [`examples/procedure-selection.jsonl`](examples/procedure-selection.jsonl)。
 
-### 2.8 显式多目标比较
+### 2.9 显式多目标比较
 
 `compareProcedures()` 仅比较调用方提供的 procedure ID，并要求调用方显式声明目标、方向、权重和可选硬约束。目标可为 `stability`、`success_probability`、`evidence_coverage`，或精确的 metric `name + unit`；内核不会推断领域语义或进行单位换算。
 
@@ -202,7 +231,7 @@ defer comparisons.deinit(a);
 
 metric 的 uncertainty 会以保守方向纳入：maximize 取 `value - uncertainty`，minimize 取 `value + uncertainty`。缺 metric、方向冲突或硬约束失败的候选没有 score/rank，但保留逐目标拒绝原因。该 API 不调用检索、backend、图扩张、工具或 Action。示例见 [`examples/procedure-comparison.jsonl`](examples/procedure-comparison.jsonl)。
 
-### 2.9 核心 API
+### 2.10 核心 API
 
 `Runtime` 的公开方法（`src/runtime.zig`）：
 
@@ -226,6 +255,10 @@ metric 的 uncertainty 会以保守方向纳入：maximize 取 `value - uncertai
 | 信号 | `addSignalProvider(provider)` / `setSignalCalibration(weight, bias)` / `addCalibratedSignalProvider()` | 接入可替换信号 |
 | 反馈 | `setFeedbackVerifier(verifier)` / `clearFeedbackVerifier()` | 信任边界 |
 | | `setPlasticityPolicy(policy)` / `recordFeedback(input) !u64` | 已验证结果驱动的可塑性 |
+| IEL | `meml.iel.Evolution.init(&runtime)` | 信息演化门面 |
+| | `observe` / `declare` / `derive` / `corroborate` / `contradict` | 信息写入、谱系与证据关系 |
+| | `supersede` / `changeLifecycle` / `recordDecision` / `recordFeedback` | 受验证的生命周期、依赖与反馈账本 |
+| | `verificationCandidates` / `verifyMaterializedView` | 只读复核排序 / 恢复一致性校验 |
 | 整合 | `consolidate()` / `consolidateAll()` / `consolidatePending(policy)` | 显式整合 |
 | | `consolidateWithPolicy(policy)` / `consolidateAllAtomic(policy)` / `consolidatePendingAtomic(policy)` | 策略化 / 原子整合 |
 | | `consolidateNeural(consolidator) !usize` | 确定性 neural 整合 |
@@ -235,11 +268,14 @@ metric 的 uncertainty 会以保守方向纳入：maximize 取 `value - uncertai
 | | `persistTo(provider, io, path)` / `persistIfRevision(provider, expected_revision, io, path)` | 自定义 / CAS |
 | | `recover(allocator, io, path) !Runtime` | 恢复 |
 
-### 2.10 关键类型与枚举
+### 2.11 关键类型与枚举
 
 ```zig
 pub const Kind = enum { experience, evidence, claim, memory, belief, concept, procedure, context };
-pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes };
+pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes, verifies, supersedes };
+pub const InformationKind = enum { fact, claim, observation, hypothesis, policy, preference, decision, procedure };
+pub const Trust = enum { unverified, asserted, corroborated, verified, revoked };
+pub const Retention = enum { ephemeral, session, working, long_term, archived };
 pub const CognitiveState = enum { active, contested, superseded, archived };
 pub const TransitionKind = enum { set_state, reinforce, penalize, stabilize, decay };
 pub const Outcome = enum { success, failure };

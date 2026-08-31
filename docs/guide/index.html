@@ -1,351 +1,382 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>meml — explainable long-term memory runtime for agents</title>
-    <meta
-      name="description"
-      content="MEML is a local, explainable long-term memory runtime for agents, written in Zig. Zero-dependency CLI, MCP servers, Skills and plugins for Claude Code, Codex, Pi, DeepSeek Harness, WorkBuddy and CodeBuddy."
-    />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E%F0%9F%A7%A0%3C/text%3E%3C/svg%3E"
-    />
-    <style>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>meml — explainable long-term memory runtime for agents</title>
+  <meta name="description"
+    content="MEML is a local, explainable long-term memory runtime for agents, written in Zig. Zero-dependency CLI, MCP servers, Skills and plugins for Claude Code, Codex, Pi, DeepSeek Harness, WorkBuddy and CodeBuddy." />
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E%F0%9F%A7%A0%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #0b0d10;
+      --bg-2: #14181d;
+      --fg: #e6e8eb;
+      --muted: #9aa3ad;
+      --accent: #ffd400;
+      --accent-2: #ff7a00;
+      --border: #232a31;
+      --code-bg: #0f1318;
+      --radius: 10px;
+      --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas,
+        monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+        Arial, sans-serif;
+    }
+
+    @media (prefers-color-scheme: light) {
       :root {
-        --bg: #0b0d10;
-        --bg-2: #14181d;
-        --fg: #e6e8eb;
-        --muted: #9aa3ad;
-        --accent: #ffd400;
-        --accent-2: #ff7a00;
-        --border: #232a31;
-        --code-bg: #0f1318;
-        --radius: 10px;
-        --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas,
-          monospace;
-        --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-          Arial, sans-serif;
+        --bg: #ffffff;
+        --bg-2: #f6f7f9;
+        --fg: #14181d;
+        --muted: #5b6470;
+        --border: #e4e7eb;
+        --code-bg: #f2f4f7;
+        --accent: #6860fa;
+        --accent-2: #5f3ffc;
       }
-      @media (prefers-color-scheme: light) {
-        :root {
-          --bg: #ffffff;
-          --bg-2: #f6f7f9;
-          --fg: #14181d;
-          --muted: #5b6470;
-          --border: #e4e7eb;
-          --code-bg: #f2f4f7;
-          --accent: #6860fa;
-          --accent-2: #5f3ffc;
-        }
-      }
-      * {
-        box-sizing: border-box;
-      }
-      html,
-      body {
-        margin: 0;
-        padding: 0;
-      }
-      body {
-        background-color: var(--bg);
-        color: var(--fg);
-        font-family: var(--sans);
-        line-height: 1.6;
-        -webkit-font-smoothing: antialiased;
-      }
-      a {
-        color: var(--accent);
-        text-decoration: none;
-      }
-      a:hover {
-        text-decoration: underline;
-      }
-      .wrap {
-        max-width: 880px;
-        margin: 0 auto;
-        padding: 40px 24px 80px;
-      }
-      header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        flex-wrap: wrap;
-        margin-bottom: 24px;
-      }
-      .brand {
-        display: flex;
-        align-items: baseline;
-        gap: 12px;
-      }
-      .brand h1 {
-        margin: 0;
-        font-size: 40px;
-        letter-spacing: -0.02em;
-        background: linear-gradient(
-          90deg,
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .wrap {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 40px;
+      letter-spacing: -0.02em;
+      background: linear-gradient(90deg,
           var(--accent),
-          var(--accent-2)
-        );
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-      }
-      .brand .tag {
-        color: var(--muted);
-        font-size: 14px;
-      }
-      nav {
-        display: flex;
-        gap: 14px;
-        font-size: 14px;
-        color: var(--muted);
-        flex-wrap: wrap;
-      }
-      nav a {
-        color: var(--muted);
-      }
-      nav a:hover {
-        color: var(--fg);
-        text-decoration: none;
-      }
-      .lede {
-        font-size: 18px;
-        color: var(--muted);
-        margin: 0 0 28px;
-      }
-      .lede strong {
-        color: var(--fg);
-      }
+          var(--accent-2));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
 
-      /* Install card */
-      .install {
-        background: var(--bg-2);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 18px;
-        margin-bottom: 20px;
-      }
-      .install-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        margin-bottom: 10px;
-        flex-wrap: wrap;
-      }
-      .install-head h2 {
-        margin: 0;
-        font-size: 16px;
-        font-weight: 600;
-      }
-      .tabs {
-        display: inline-flex;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        padding: 3px;
-      }
-      .tabs button {
-        appearance: none;
-        background: transparent;
-        color: var(--muted);
-        border: 0;
-        padding: 6px 12px;
-        font: inherit;
-        font-size: 13px;
-        border-radius: 999px;
-        cursor: pointer;
-      }
-      .tabs button[aria-selected="true"] {
-        background: var(--accent);
-        color: var(--bg);
-        font-weight: 600;
-      }
-      .cmd {
-        position: relative;
-        background: var(--code-bg);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        font-family: var(--mono);
-        font-size: 14px;
-        padding: 14px 70px 14px 16px;
-        overflow-x: auto;
-        white-space: nowrap;
-      }
-      .cmd .prompt {
-        color: var(--muted);
-        user-select: none;
-      }
-      .copy {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        background: var(--bg-2);
-        border: 1px solid var(--border);
-        color: var(--muted);
-        font: inherit;
-        font-size: 12px;
-        padding: 4px 10px;
-        border-radius: 6px;
-        cursor: pointer;
-        white-space: nowrap;
-      }
-      .copy:hover {
-        color: var(--fg);
-      }
-      .copy.copied {
-        color: var(--accent);
-        border-color: var(--accent);
-      }
-      .install-foot {
-        margin-top: 8px;
-        font-size: 13px;
-        color: var(--muted);
-      }
+    .brand .tag {
+      color: var(--muted);
+      font-size: 14px;
+    }
 
-      h2 {
-        margin: 36px 0 12px;
-        font-size: 22px;
-        letter-spacing: -0.01em;
-      }
-      h3 {
-        margin: 24px 0 8px;
-        font-size: 16px;
-      }
-      p {
-        margin: 0 0 12px;
-      }
+    nav {
+      display: flex;
+      gap: 14px;
+      font-size: 14px;
+      color: var(--muted);
+      flex-wrap: wrap;
+    }
 
-      pre {
-        background: var(--code-bg);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 14px 16px;
-        overflow-x: auto;
-        font-family: var(--mono);
-        font-size: 13.5px;
-        line-height: 1.55;
-      }
-      code {
-        font-family: var(--mono);
-        font-size: 0.92em;
-        background: var(--code-bg);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: 1px 6px;
-      }
-      pre code {
-        background: transparent;
-        border: 0;
-        padding: 0;
-      }
+    nav a {
+      color: var(--muted);
+    }
 
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        margin: 8px 0 16px;
-        font-size: 14px;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: 8px 10px;
-        border-bottom: 1px solid var(--border);
-        vertical-align: top;
-      }
-      th {
-        color: var(--muted);
-        font-weight: 600;
-        font-size: 13px;
-      }
-      td code {
-        white-space: nowrap;
-      }
+    nav a:hover {
+      color: var(--fg);
+      text-decoration: none;
+    }
 
-      ul {
-        padding-left: 20px;
-      }
-      li {
-        margin: 4px 0;
-      }
+    .lede {
+      font-size: 18px;
+      color: var(--muted);
+      margin: 0 0 28px;
+    }
 
-      footer {
-        margin-top: 56px;
-        padding-top: 20px;
-        border-top: 1px solid var(--border);
-        color: var(--muted);
-        font-size: 13px;
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        flex-wrap: wrap;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <header>
-        <div class="brand">
-          <h1>meml</h1>
-          <span class="tag">🧠 explainable agent memory · written in Zig</span>
+    .lede strong {
+      color: var(--fg);
+    }
+
+    /* Install card */
+    .install {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      margin-bottom: 20px;
+    }
+
+    .install-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    .install-head h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .tabs {
+      display: inline-flex;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px;
+    }
+
+    .tabs button {
+      appearance: none;
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      padding: 6px 12px;
+      font: inherit;
+      font-size: 13px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+
+    .tabs button[aria-selected="true"] {
+      background: var(--accent);
+      color: var(--bg);
+      font-weight: 600;
+    }
+
+    .cmd {
+      position: relative;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-family: var(--mono);
+      font-size: 14px;
+      padding: 14px 70px 14px 16px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+
+    .cmd .prompt {
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .copy {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .copy:hover {
+      color: var(--fg);
+    }
+
+    .copy.copied {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .install-foot {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    h2 {
+      margin: 36px 0 12px;
+      font-size: 22px;
+      letter-spacing: -0.01em;
+    }
+
+    h3 {
+      margin: 24px 0 8px;
+      font-size: 16px;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 13.5px;
+      line-height: 1.55;
+    }
+
+    code {
+      font-family: var(--mono);
+      font-size: 0.92em;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0 16px;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    td code {
+      white-space: nowrap;
+    }
+
+    ul {
+      padding-left: 20px;
+    }
+
+    li {
+      margin: 4px 0;
+    }
+
+    footer {
+      margin-top: 56px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <h1>meml</h1>
+        <span class="tag">🧠 explainable memory &amp; information evolution · written in Zig</span>
+      </div>
+      <nav>
+        <a href="#install">Install</a>
+        <a href="#quick-start">Quick start</a>
+        <a href="#iel">IEL</a>
+        <a href="#integrations">Integrations</a>
+        <a href="#ops">Ops</a>
+        <a href="https://github.com/mindon/meml" aria-label="GitHub"><svg xmlns="http://www.w3.org/2000/svg" width="16"
+            height="16" fill="currentColor" viewBox="0 0 16 16">
+            <path
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8" />
+          </svg></a>
+      </nav>
+    </header>
+
+    <p class="lede">
+      A <strong>local, explainable memory and information-evolution runtime</strong>
+      for agents. MEML stores observations as
+      <strong>subject–predicate–object triples</strong>, retrieves them with
+      <strong>explainable activation</strong>, and records how information is
+      corroborated, contradicted, superseded, and used by decisions. It ships
+      as a zero-dependency binary plus a Zig-library IEL façade, MCP servers,
+      Skills, and plugins for Claude Code, Codex, Pi, DeepSeek Harness,
+      WorkBuddy, and CodeBuddy.
+    </p>
+
+    <!-- CLI Install card with OS auto-detection -->
+    <section id="install" class="install">
+      <div class="install-head">
+        <h2>Install the CLI</h2>
+        <div class="tabs" role="tablist" aria-label="Operating system">
+          <button role="tab" data-os="mac" aria-selected="false">macOS</button>
+          <button role="tab" data-os="linux" aria-selected="false">Linux</button>
+          <button role="tab" data-os="windows" aria-selected="false">Windows</button>
         </div>
-        <nav>
-          <a href="#install">Install</a>
-          <a href="#quick-start">Quick start</a>
-          <a href="#integrations">Integrations</a>
-          <a href="#ops">Ops</a>
-          <a
-            href="https://github.com/mindon/meml"
-            aria-label="GitHub"
-            ><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8" />
-            </svg></a>
-        </nav>
-      </header>
+      </div>
+      <div class="cmd">
+        <span class="prompt" id="cmd-prompt">$ </span><span id="cmd-text">curl -fsSL https://mindon.dev/meml/install |
+          bash</span>
+        <button class="copy" type="button">Copy</button>
+      </div>
+      <div class="install-foot">
+        Installs <code>meml</code> to <code>~/.meml/bin</code> and adds it to
+        your PATH. Pin a version with
+        <code>curl -fsSL https://mindon.dev/meml/install | bash -s -- v0.3.0</code>.
+      </div>
+    </section>
 
-      <p class="lede">
-        A <strong>local, explainable long-term memory runtime</strong> for
-        agents. MEML stores observations as
-        <strong>subject–predicate–object triples</strong>, retrieves them with
-        <strong>explainable activation</strong>, and consolidates verified
-        feedback into durable memory — all in one zero-dependency binary, plus
-        drop-in MCP servers, Skills and plugins for Claude Code, Codex, Pi,
-        DeepSeek Harness, WorkBuddy and CodeBuddy.
-      </p>
-
-      <!-- CLI Install card with OS auto-detection -->
-      <section id="install" class="install">
-        <div class="install-head">
-          <h2>Install the CLI</h2>
-          <div class="tabs" role="tablist" aria-label="Operating system">
-            <button role="tab" data-os="mac" aria-selected="false">macOS</button>
-            <button role="tab" data-os="linux" aria-selected="false">Linux</button>
-            <button role="tab" data-os="windows" aria-selected="false">Windows</button>
-          </div>
-        </div>
-        <div class="cmd">
-          <span class="prompt" id="cmd-prompt">$ </span><span id="cmd-text"
-            >curl -fsSL https://mindon.dev/meml/install | bash</span
-          >
-          <button class="copy" type="button">Copy</button>
-        </div>
-        <div class="install-foot">
-          Installs <code>meml</code> to <code>~/.meml/bin</code> and adds it to
-          your PATH. Pin a version with
-          <code>curl -fsSL https://mindon.dev/meml/install | bash -s -- v0.1.0</code>.
-        </div>
-      </section>
-
-      <h2 id="quick-start">Quick Start</h2>
-      <p>
-        The CLI speaks a <strong>JSON-lines protocol</strong>: each request is a
-        JSON object with an <code>op</code> field, each response is one JSON
-        line.
-      </p>
-      <pre><code># Record an observation (subject–predicate–object triple)
+    <h2 id="quick-start">Quick Start</h2>
+    <p>
+      The CLI speaks a <strong>JSON-lines protocol</strong>: each request is a
+      JSON object with an <code>op</code> field, each response is one JSON
+      line.
+    </p>
+    <pre><code># Record an observation (subject–predicate–object triple)
 meml '{"op":"observe","subject":"alice","predicate":"likes","object":"coffee"}'
 
 # Retrieve related memory with explainable activation
@@ -357,188 +388,234 @@ meml '{"op":"persist","path":".meml/state.json"}'
 # Batch mode: read requests from a file, or pipe them in
 meml --file requests.jsonl
 echo '{"op":"ping"}' | meml</code></pre>
-      <p>
-        Also available as an embeddable library: run
-        <code>zig fetch --save git+https://github.com/mindon/meml</code> to add
-        it to a Zig project.
-      </p>
+    <p>
+      Also available as an embeddable library: run
+      <code>zig fetch --save git+https://github.com/mindon/meml</code> to add
+      it to a Zig project.
+    </p>
 
-      <h2 id="integrations">Agent Integrations</h2>
-      <p>
-        Give any non-Zig agent a local long-term memory. The Skill teaches the
-        agent <em>how</em> to use MEML; the plugin wires up a read-only
-        <code>meml_recall</code> tool. Install both in one step each.
-      </p>
+    <h2 id="iel">Information Evolution (IEL)</h2>
+    <p>
+      The Zig-library façade <code>meml.iel.Evolution</code> extends MEML from
+      retained memory to auditable information lifecycle: information kind,
+      trust, retention, source, observed time, modeled validity interval,
+      immutable evolution events, and decision dependencies.
+    </p>
+    <ul>
+      <li><code>observe</code>, <code>declare</code>, and <code>derive</code> retain observations, assertions, and lineage.</li>
+      <li><code>corroborate</code>, <code>contradict</code>, and <code>supersede</code> preserve evidence and replacement history instead of silently overwriting information.</li>
+      <li><code>verificationCandidates()</code> only ranks review work from expiry, conflict, provenance, or confidence. It never verifies sources, calls tools, or executes actions.</li>
+    </ul>
+    <p>
+      <strong>Boundary:</strong> IEL is currently a Zig-library API. The CLI and
+      <code>.meml</code> DSL intentionally expose no IEL-specific operations.
+      <code>MEML15</code> persists immutable evolution events beside a current
+      materialized view; it is not a general event-sourcing runtime rebuilt from
+      a complete external event stream. Read the <a href="https://github.com/mindon/meml/blob/main/docs/information-evolution.md">IEL guide</a> for details.
+    </p>
 
-      <section class="install">
-        <div class="install-head">
-          <h2>Install the Skill</h2>
-        </div>
-        <div class="cmd">
-          <span class="prompt">$ </span><span data-cmd-text
-            >curl -fsSL https://mindon.dev/meml/install-skill | bash</span
-          >
-          <button class="copy" type="button">Copy</button>
-        </div>
-        <div class="install-foot">
-          Downloads the <code>meml-agent-memory</code> Skill and copies it into
-          detected hosts. For CodeBuddy and WorkBuddy it prepares the standard
-          <code>skills/&lt;name&gt;/SKILL.md</code> plugin layout under
-          <code>~/.meml/integrations</code>.
-        </div>
-      </section>
+    <h2 id="integrations">Agent Integrations</h2>
+    <p>
+      Give any non-Zig agent a local long-term memory. The Skill teaches the
+      agent <em>how</em> to use MEML; the plugin wires up a read-only
+      <code>meml_recall</code> tool. Install both in one step each.
+    </p>
 
-      <section class="install">
-        <div class="install-head">
-          <h2>Install the Plugin</h2>
-        </div>
-        <div class="cmd">
-          <span class="prompt">$ </span><span data-cmd-text
-            >curl -fsSL https://mindon.dev/meml/install-plugin | bash</span
-          >
-          <button class="copy" type="button">Copy</button>
-        </div>
-        <div class="install-foot">
-          Downloads <code>integrations/</code> to <code>~/.meml/integrations</code>,
-          registers the <code>meml</code> MCP server for CodeBuddy, Claude Code
-          and Codex when their CLIs are available, and prepares a compatible
-          local plugin for WorkBuddy. Requires <a href="https://nodejs.org">Node.js</a>.
-        </div>
-      </section>
+    <section class="install">
+      <div class="install-head">
+        <h2>Install the Skill</h2>
+      </div>
+      <div class="cmd">
+        <span class="prompt">$ </span><span data-cmd-text>curl -fsSL https://mindon.dev/meml/install-skill | bash</span>
+        <button class="copy" type="button">Copy</button>
+      </div>
+      <div class="install-foot">
+        Downloads the <code>meml-agent-memory</code> Skill and copies it into
+        detected hosts. For CodeBuddy and WorkBuddy it prepares the standard
+        <code>skills/&lt;name&gt;/SKILL.md</code> plugin layout under
+        <code>~/.meml/integrations</code>.
+      </div>
+    </section>
 
-      <h3>CodeBuddy &amp; WorkBuddy</h3>
-      <p>
-        The plugin installer creates a compatible local plugin at
-        <code>~/.meml/integrations/codebuddy/meml-plugin</code>. CodeBuddy is
-        registered automatically when its CLI is available; otherwise launch
-        the plugin explicitly:
-      </p>
-      <pre><code># CodeBuddy
+    <section class="install">
+      <div class="install-head">
+        <h2>Install the Plugin</h2>
+      </div>
+      <div class="cmd">
+        <span class="prompt">$ </span><span data-cmd-text>curl -fsSL https://mindon.dev/meml/install-plugin |
+          bash</span>
+        <button class="copy" type="button">Copy</button>
+      </div>
+      <div class="install-foot">
+        Downloads <code>integrations/</code> to <code>~/.meml/integrations</code>,
+        registers the <code>meml</code> MCP server for CodeBuddy, Claude Code
+        and Codex when their CLIs are available, and prepares a compatible
+        local plugin for WorkBuddy. Requires <a href="https://nodejs.org">Node.js</a>.
+      </div>
+    </section>
+
+    <h3>CodeBuddy &amp; WorkBuddy</h3>
+    <p>
+      The plugin installer creates a compatible local plugin at
+      <code>~/.meml/integrations/codebuddy/meml-plugin</code>. CodeBuddy is
+      registered automatically when its CLI is available; otherwise launch
+      the plugin explicitly:
+    </p>
+    <pre><code># CodeBuddy
 codebuddy --plugin-dir ~/.meml/integrations/codebuddy/meml-plugin
 
 # WorkBuddy (the same plugin layout)
 workbuddy --plugin-dir ~/.meml/integrations/codebuddy/meml-plugin</code></pre>
-      <p>
-        In CodeBuddy, the Skill is called from the plugin namespace as
-        <code>/meml-memory:meml-agent-memory</code>. In WorkBuddy, enable the
-        local plugin directory through its plugin manager. Restart or reload
-        plugins after installation.
-      </p>
+    <p>
+      In CodeBuddy, the Skill is called from the plugin namespace as
+      <code>/meml-memory:meml-agent-memory</code>. In WorkBuddy, enable the
+      local plugin directory through its plugin manager. Restart or reload
+      plugins after installation.
+    </p>
 
-      <h3>Supported hosts</h3>
-      <table>
-        <thead>
-          <tr><th>Host</th><th>Integration</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>Claude Code</td><td>Plugin + Skill + MCP server</td></tr>
-          <tr><td>Codex</td><td>MCP server (<code>config.toml</code>)</td></tr>
-          <tr><td>Pi</td><td>Plugin (<code>index.ts</code>) + Skill</td></tr>
-          <tr><td>DeepSeek Harness</td><td>Plugin (<code>cordis.yml</code>) + Skill</td></tr>
-          <tr><td>WorkBuddy</td><td>Compatible local plugin + Skill + MCP</td></tr>
-          <tr><td>CodeBuddy</td><td>Plugin + Skill + MCP server</td></tr>
-        </tbody>
-      </table>
-      <p>
-        Full per-host setup: <a href="https://github.com/mindon/meml/tree/main/integrations">github.com/mindon/meml/tree/main/integrations</a>.
-      </p>
+    <h3>Supported hosts</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Host</th>
+          <th>Integration</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Claude Code</td>
+          <td>Plugin + Skill + MCP server</td>
+        </tr>
+        <tr>
+          <td>Codex</td>
+          <td>MCP server (<code>config.toml</code>)</td>
+        </tr>
+        <tr>
+          <td>Pi</td>
+          <td>Plugin (<code>index.ts</code>) + Skill</td>
+        </tr>
+        <tr>
+          <td>DeepSeek Harness</td>
+          <td>Plugin (<code>cordis.yml</code>) + Skill</td>
+        </tr>
+        <tr>
+          <td>WorkBuddy</td>
+          <td>Compatible local plugin + Skill + MCP</td>
+        </tr>
+        <tr>
+          <td>CodeBuddy</td>
+          <td>Plugin + Skill + MCP server</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Full per-host setup: <a
+        href="https://github.com/mindon/meml/tree/main/integrations">github.com/mindon/meml/tree/main/integrations</a>.
+    </p>
 
-      <h2 id="ops">Ops Reference</h2>
-      <p>The CLI exposes these operations:</p>
-      <pre><code>ping  observe  assert  remember  infer  link  unlink  support  contradict
+    <h2 id="ops">Ops Reference</h2>
+    <p>The CLI exposes these operations:</p>
+    <pre><code>ping  observe  assert  remember  infer  link  unlink  support  contradict
 transition  supersede  generalize  procedure  predict_procedure
 select_procedures  compare_procedures  activate  feedback
 consolidate  auto_consolidate  signals  backend  persist  recover  exec
 set_verifier  clear_verifier  set_plasticity_policy</code></pre>
+    <p>
+      IEL deliberately has no CLI operations: use the Zig-library
+      <code>meml.iel.Evolution</code> API when an application needs auditable
+      information evolution.
+    </p>
 
-      <h2 id="more">More</h2>
-      <ul>
-        <li>Source &amp; docs: <a href="https://github.com/mindon/meml">github.com/mindon/meml</a></li>
-        <li>Usage guide: <a href="https://github.com/mindon/meml/blob/main/USAGE.md">USAGE.md</a></li>
-        <li>Issues &amp; feedback: <a href="https://github.com/mindon/meml/issues">github.com/mindon/meml/issues</a></li>
-      </ul>
+    <h2 id="more">More</h2>
+    <ul>
+      <li>Source &amp; docs: <a href="https://github.com/mindon/meml">github.com/mindon/meml</a></li>
+      <li>English usage guide: <a href="https://github.com/mindon/meml/blob/main/USAGE.en.md">USAGE.en.md</a></li>
+      <li>IEL guide: <a href="https://github.com/mindon/meml/blob/main/docs/information-evolution.md">information-evolution.md</a></li>
+      <li>Issues &amp; feedback: <a href="https://github.com/mindon/meml/issues">github.com/mindon/meml/issues</a></li>
+    </ul>
 
-      <footer>
-        <span>© <span id="year"></span> meml</span>
-        <span>Written in <a href="https://ziglang.org/">Zig</a></span>
-      </footer>
-    </div>
+    <footer>
+      <span>© <span id="year"></span> meml</span>
+      <span>Written in <a href="https://ziglang.org/">Zig</a></span>
+    </footer>
+  </div>
 
-    <script>
-      (function () {
-        const CMDS = {
-          mac: {
-            prompt: "$ ",
-            text: "curl -fsSL https://mindon.dev/meml/install | bash",
-          },
-          linux: {
-            prompt: "$ ",
-            text: "curl -fsSL https://mindon.dev/meml/install | bash",
-          },
-          windows: {
-            prompt: "PS> ",
-            text: 'powershell -c "irm https://mindon.dev/meml/install.ps1 | iex"',
-          },
-        };
+  <script>
+    (function () {
+      const CMDS = {
+        mac: {
+          prompt: "$ ",
+          text: "curl -fsSL https://mindon.dev/meml/install | bash",
+        },
+        linux: {
+          prompt: "$ ",
+          text: "curl -fsSL https://mindon.dev/meml/install | bash",
+        },
+        windows: {
+          prompt: "PS> ",
+          text: 'powershell -c "irm https://mindon.dev/meml/install.ps1 | iex"',
+        },
+      };
 
-        function detectOS() {
-          const ua = (navigator.userAgent || "").toLowerCase();
-          const platform = (
-            navigator.userAgentData?.platform ||
-            navigator.platform ||
-            ""
-          ).toLowerCase();
-          if (/win/.test(platform) || /windows/.test(ua)) return "windows";
-          if (/mac/.test(platform) || /mac os|macintosh|iphone|ipad/.test(ua))
-            return "mac";
-          return "linux";
-        }
+      function detectOS() {
+        const ua = (navigator.userAgent || "").toLowerCase();
+        const platform = (
+          navigator.userAgentData?.platform ||
+          navigator.platform ||
+          ""
+        ).toLowerCase();
+        if (/win/.test(platform) || /windows/.test(ua)) return "windows";
+        if (/mac/.test(platform) || /mac os|macintosh|iphone|ipad/.test(ua))
+          return "mac";
+        return "linux";
+      }
 
-        const tabs = document.querySelectorAll(".tabs button");
-        const cmdPrompt = document.getElementById("cmd-prompt");
-        const cmdText = document.getElementById("cmd-text");
+      const tabs = document.querySelectorAll(".tabs button");
+      const cmdPrompt = document.getElementById("cmd-prompt");
+      const cmdText = document.getElementById("cmd-text");
 
-        function setOS(os) {
-          const c = CMDS[os] || CMDS.linux;
-          cmdPrompt.textContent = c.prompt;
-          cmdText.textContent = c.text;
-          tabs.forEach((b) =>
-            b.setAttribute("aria-selected", b.dataset.os === os ? "true" : "false")
-          );
-        }
-
+      function setOS(os) {
+        const c = CMDS[os] || CMDS.linux;
+        cmdPrompt.textContent = c.prompt;
+        cmdText.textContent = c.text;
         tabs.forEach((b) =>
-          b.addEventListener("click", () => setOS(b.dataset.os))
+          b.setAttribute("aria-selected", b.dataset.os === os ? "true" : "false")
         );
+      }
 
-        // Generic copy for every .copy button (CLI + Skill + Plugin).
-        document.querySelectorAll(".copy").forEach((btn) => {
-          btn.addEventListener("click", async () => {
-            const cmd = btn.parentElement.querySelector(
-              "#cmd-text, [data-cmd-text]"
-            );
-            const text = cmd ? cmd.textContent.trim() : "";
-            try {
-              await navigator.clipboard.writeText(text);
-              btn.textContent = "Copied!";
-              btn.classList.add("copied");
-              setTimeout(() => {
-                btn.textContent = "Copy";
-                btn.classList.remove("copied");
-              }, 1400);
-            } catch {
-              const r = document.createRange();
-              r.selectNodeContents(cmd);
-              const s = window.getSelection();
-              s.removeAllRanges();
-              s.addRange(r);
-            }
-          });
+      tabs.forEach((b) =>
+        b.addEventListener("click", () => setOS(b.dataset.os))
+      );
+
+      // Generic copy for every .copy button (CLI + Skill + Plugin).
+      document.querySelectorAll(".copy").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const cmd = btn.parentElement.querySelector(
+            "#cmd-text, [data-cmd-text]"
+          );
+          const text = cmd ? cmd.textContent.trim() : "";
+          try {
+            await navigator.clipboard.writeText(text);
+            btn.textContent = "Copied!";
+            btn.classList.add("copied");
+            setTimeout(() => {
+              btn.textContent = "Copy";
+              btn.classList.remove("copied");
+            }, 1400);
+          } catch {
+            const r = document.createRange();
+            r.selectNodeContents(cmd);
+            const s = window.getSelection();
+            s.removeAllRanges();
+            s.addRange(r);
+          }
         });
+      });
 
-        setOS(detectOS());
-        document.getElementById("year").textContent = new Date().getFullYear();
-      })();
-    </script>
-  </body>
+      setOS(detectOS());
+      document.getElementById("year").textContent = new Date().getFullYear();
+    })();
+  </script>
+</body>
+
 </html>

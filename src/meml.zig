@@ -16,9 +16,18 @@ pub const science = @import("science.zig");
 pub const quantum = @import("quantum.zig");
 pub const evaluation = @import("evaluation.zig");
 pub const artifact = @import("artifact.zig");
+pub const iel = @import("iel.zig");
 
 pub const Kind = model.Kind;
 pub const RelationKind = model.RelationKind;
+pub const InformationKind = model.InformationKind;
+pub const Trust = model.Trust;
+pub const Retention = model.Retention;
+pub const InformationRecord = model.InformationRecord;
+pub const EvolutionKind = model.EvolutionKind;
+pub const EvolutionEvent = model.EvolutionEvent;
+pub const DecisionDependency = model.DecisionDependency;
+pub const VerificationCandidate = model.VerificationCandidate;
 pub const Node = model.Node;
 pub const CognitiveState = model.CognitiveState;
 pub const TransitionKind = model.TransitionKind;
@@ -92,6 +101,7 @@ pub const SignalPipeline = signals.Pipeline;
 test {
     _ = @import("runtime_test.zig");
     _ = @import("science_test.zig");
+    _ = @import("iel_test.zig");
     _ = @import("artifact.zig");
 }
 

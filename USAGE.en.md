@@ -131,7 +131,36 @@ _ = id;
 
 `science.Generic.adapter()` provides the same general validation boundary; `quantum.adapter()` is only an optional quantum input-normalization example. Neither may mutate `Store` directly. See [`docs/domain-memory.md`](docs/domain-memory.md).
 
-### 2.4 Dynamic Cognitive State
+### 2.4 Information-Evolution Façade (IEL)
+
+`meml.iel.Evolution` is a Zig-library-only information-evolution façade. It does not replace `Runtime` or the retrieval kernel; it enriches written semantic nodes with information kind, trust, retention, source, observed time, and modeled validity intervals, while recording immutable evolution events and decision dependencies.
+
+```zig
+var evolution = meml.iel.Evolution.init(&runtime);
+const observation = try evolution.observe(.{
+    .record = .{ .kind = .experience, .subject = "service", .predicate = "latency", .object = "high", .context = "release", .timestamp = 10, .confidence = 0.4 },
+    .kind = .observation,
+    .trust = .unverified,
+    .retention = .working,
+    .source = "telemetry",
+    .valid_from = 10,
+    .valid_until = 20,
+});
+
+var review = try evolution.verificationCandidates(21, a);
+defer review.deinit(a); // read-only candidates from expiry, conflict, provenance, or confidence
+_ = observation;
+```
+
+- `observe()`, `declare()`, and `derive()` record observations, assertions, and lineage; `corroborate()` and `contradict()` preserve evidence relations rather than silently overwriting information.
+- `supersede()` and `changeLifecycle()` still require the existing `TransitionVerifier`; IEL cannot bypass host authorization for state changes.
+- `recordDecision()` audits only which information a decision depended on, never choosing or executing a host Action; `recordFeedback()` appends evidence and an evolution event only after the underlying feedback boundary accepts the result.
+- `verificationCandidates()` read-only ranks review work. It never verifies a source, calls a tool, or executes an Action.
+- `persist()` writes IEL information metadata, evolution events, and decision dependencies into `MEML15`; after recovery, call `verifyMaterializedView()` to check consistency with the current materialized view. This is not a general event replayer and cannot rebuild a runtime from a complete external history.
+
+The current `.meml` DSL and JSON-lines CLI have no IEL-specific statements or operations. See [`docs/information-evolution.md`](docs/information-evolution.md).
+
+### 2.5 Dynamic Cognitive State
 
 MEML changes only auditable memory state; it never chooses or executes a host Action. A host must install a `TransitionVerifier` before calling bounded `transition()`; every change is persisted as a `TransitionRecord` in `MEML15`.
 
@@ -155,17 +184,17 @@ defer audit.deinit(a);
 
 The bounded DSL form is `transition <label> reinforce|penalize|decay|stabilize <0..1> actor <actor> receipt <receipt> at <timestamp> reason <reason>`; for `set_state`, replace the numeric value with `active|contested|superseded|archived`. See [`docs/dynamic-memory.md`](docs/dynamic-memory.md) and [`examples/dynamic-memory.jsonl`](examples/dynamic-memory.jsonl).
 
-### 2.5 Signed feedback attestations
+### 2.6 Signed feedback attestations
 
 For executable feedback, prefer an Ed25519 attestation over the compatibility callback. Install only host public keys with `setFeedbackAttestationPolicy`; `FeedbackAttestation` signs a canonical payload that binds issuer/key ID, nonce, issuance and expiry, feedback fields, opaque receipt reference, and every semantic field of the target node. A valid attestation must name the same actor as its issuer and remain valid at the event and runtime clocks. MEML persists only the SHA-256 digest and expiry of an accepted payload in `MEML15`, so a consumed attestation remains rejected after recovery; it never persists its nonce, signature, or private key.
 
 CLI hosts configure Base64-encoded public keys with `set_attestation_verifier` and pass a Base64-encoded 64-byte signature under `feedback.attestation`. Treat `receipt` as an opaque reference, not a credential. `clear_verifier` removes both the legacy and signed-feedback policies; public-key configuration must be reinstalled after `recover`.
 
-### 2.6 Frozen retrieval evaluation
+### 2.7 Frozen retrieval evaluation
 
 `zig build eval` loads `eval/datasets/retrieval-v1/seed.jsonl`, resolves the human labels in `annotations.jsonl` through stable `record_key` values, and compares multi-label Recall@K, MRR, and graded NDCG against `eval/baselines/retrieval-v1.json`. The emitted JSON report is deterministic; CI runs this gate on every push and pull request. Dataset updates must use a new version directory and a reviewed baseline rather than rewriting an existing benchmark.
 
-### 2.7 Procedure Selection Quality Gate
+### 2.8 Procedure Selection Quality Gate
 
 `selectProcedures()` compares only procedure IDs explicitly supplied by the host. It never retrieves or expands candidates and never executes an Action. The gate requires active state, exact scope compatibility, stability, verified-outcome sample count, success probability, and evidence coverage; rejected candidates retain their reason dimensions but receive no rank.
 
@@ -182,7 +211,7 @@ defer choices.deinit(a);
 
 Use `predictProcedureAt()` for cutoff-based historical prediction evaluation. `selectProcedures()` uses current cognitive state only, preventing future state from leaking into historical selection replay. The JSONL example is [`examples/procedure-selection.jsonl`](examples/procedure-selection.jsonl).
 
-### 2.8 Explicit Multi-Objective Comparison
+### 2.9 Explicit Multi-Objective Comparison
 
 `compareProcedures()` compares only caller-provided procedure IDs and requires callers to declare every target, direction, weight, and optional hard constraint. Targets may be `stability`, `success_probability`, `evidence_coverage`, or an exact metric `name + unit`; the kernel never infers domain semantics or converts units.
 
@@ -202,7 +231,7 @@ defer comparisons.deinit(a);
 
 Metric uncertainty is incorporated conservatively: maximize uses `value - uncertainty`, while minimize uses `value + uncertainty`. Candidates with missing metrics, direction conflicts, or failed constraints have no score/rank but retain per-objective rejection reasons. This API never invokes retrieval, a backend, graph expansion, a tool, or an Action. See [`examples/procedure-comparison.jsonl`](examples/procedure-comparison.jsonl).
 
-### 2.9 Core API
+### 2.10 Core API
 
 Public methods on `Runtime` (`src/runtime.zig`):
 
@@ -226,6 +255,10 @@ Public methods on `Runtime` (`src/runtime.zig`):
 | Signals | `addSignalProvider(provider)` / `setSignalCalibration(weight, bias)` / `addCalibratedSignalProvider()` | Attach replaceable signals |
 | Feedback | `setFeedbackVerifier(verifier)` / `clearFeedbackVerifier()` | Trust boundary |
 | | `setPlasticityPolicy(policy)` / `recordFeedback(input) !u64` | Verified outcome-driven plasticity |
+| IEL | `meml.iel.Evolution.init(&runtime)` | Information-evolution façade |
+| | `observe` / `declare` / `derive` / `corroborate` / `contradict` | Information writes, lineage, and evidence relations |
+| | `supersede` / `changeLifecycle` / `recordDecision` / `recordFeedback` | Verified lifecycle, dependency, and feedback ledger |
+| | `verificationCandidates` / `verifyMaterializedView` | Read-only review ranking / recovery consistency check |
 | Consolidation | `consolidate()` / `consolidateAll()` / `consolidatePending(policy)` | Explicit consolidation |
 | | `consolidateWithPolicy(policy)` / `consolidateAllAtomic(policy)` / `consolidatePendingAtomic(policy)` | Policy-driven / atomic consolidation |
 | | `consolidateNeural(consolidator) !usize` | Deterministic neural consolidation |
@@ -235,11 +268,14 @@ Public methods on `Runtime` (`src/runtime.zig`):
 | | `persistTo(provider, io, path)` / `persistIfRevision(provider, expected_revision, io, path)` | Custom / CAS |
 | | `recover(allocator, io, path) !Runtime` | Restore |
 
-### 2.10 Key types and enums
+### 2.11 Key types and enums
 
 ```zig
 pub const Kind = enum { experience, evidence, claim, memory, belief, concept, procedure, context };
-pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes };
+pub const RelationKind = enum { supports, contradicts, derived_from, generalizes, follows, causes, verifies, supersedes };
+pub const InformationKind = enum { fact, claim, observation, hypothesis, policy, preference, decision, procedure };
+pub const Trust = enum { unverified, asserted, corroborated, verified, revoked };
+pub const Retention = enum { ephemeral, session, working, long_term, archived };
 pub const CognitiveState = enum { active, contested, superseded, archived };
 pub const TransitionKind = enum { set_state, reinforce, penalize, stabilize, decay };
 pub const Outcome = enum { success, failure };
