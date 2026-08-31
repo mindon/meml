@@ -674,6 +674,7 @@ test "self-memory example executes, persists feedback, and remains retrievable a
     const path = testPath("test-self-memory.state");
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
     var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
     runtime.setFeedbackVerifier(trustedFeedbackVerifier());
     runtime.setTransitionVerifier(trustedTransitionVerifier());
     var report = try meml.source.execute(&runtime, source, std.testing.allocator);
@@ -681,7 +682,6 @@ test "self-memory example executes, persists feedback, and remains retrievable a
     try std.testing.expectEqual(@as(usize, 1), report.feedback);
     try std.testing.expect(runtime.store.neural_states.items.len > 0);
     try runtime.persist(std.testing.io, path);
-    runtime.deinit();
 
     var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
     defer recovered.deinit();

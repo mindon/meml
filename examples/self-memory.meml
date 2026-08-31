@@ -42,7 +42,7 @@ assert meml derives-stability-attractors-and-bounded-state-propagation dynamics 
 assert meml revision-cas rejects-stale-writers durability confidence 0.99 as cas
 
 # 信息演化门面：IEL 仅通过 Zig 库 API 暴露，不新增 .meml 或 CLI 命令。
-assert meml iel-facade records-information-kind-trust-retention-source-and-bitemporal-validity capability architecture confidence 0.99 as iel_metadata
+assert meml iel-facade records-information-kind-trust-retention-source-and-bitemporal-validity capability confidence 0.99 as iel_metadata
 assert meml iel-ledger appends-immutable-evolution-events-and-maintains-a-current-materialized-information-view durability confidence 0.99 as iel_ledger
 assert meml iel-decision records-information-dependencies-without-authorizing-or-executing-actions boundary confidence 0.99 as iel_decision_boundary
 assert meml iel-feedback writes-host-verified-outcomes-back-as-evidence-and-evolution-events safety confidence 0.99 as iel_feedback
