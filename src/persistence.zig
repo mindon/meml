@@ -12,6 +12,12 @@ fn lockName(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}.lock", .{path});
 }
 
+fn ensureParentDirectory(io: std.Io, path: []const u8) !void {
+    const separator = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+    if (separator == 0) return;
+    try std.Io.Dir.cwd().createDirPath(io, path[0..separator]);
+}
+
 fn acquireWriterLock(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !struct { file: std.Io.File, name: []u8 } {
     const name = try lockName(allocator, path);
     errdefer allocator.free(name);
@@ -195,6 +201,7 @@ fn saveAtomicLocked(store: *const store_mod.Store, revision: u64, next_id: u64, 
 
 /// Write a validated complete state to a journal and atomically replace the target.
 pub fn saveAtomic(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i64, io: std.Io, allocator: std.mem.Allocator, path: []const u8) !void {
+    try ensureParentDirectory(io, path);
     var lock = try acquireWriterLock(io, allocator, path);
     defer {
         lock.file.close(io);
@@ -206,6 +213,7 @@ pub fn saveAtomic(store: *const store_mod.Store, revision: u64, next_id: u64, cl
 /// Optimistic local CAS: an update commits only if the persisted revision
 /// equals `expected_revision`; otherwise it leaves the target unchanged.
 pub fn saveAtomicIfRevision(store: *const store_mod.Store, expected_revision: u64, next_id: u64, clock: i64, io: std.Io, allocator: std.mem.Allocator, path: []const u8) !u64 {
+    try ensureParentDirectory(io, path);
     var lock = try acquireWriterLock(io, allocator, path);
     defer {
         lock.file.close(io);

@@ -264,7 +264,7 @@ Public methods on `Runtime` (`src/runtime.zig`):
 | | `consolidateNeural(consolidator) !usize` | Deterministic neural consolidation |
 | | `enableAutoConsolidation(policy)` / `disableAutoConsolidation()` | Event-triggered consolidation |
 | Backend | `useVectorBackend()` / `useGraphBackend()` | Switch candidate provider |
-| Persistence | `persist(io, path)` / `persistAtomic(io, path)` | Save (atomic write optional) |
+| Persistence | `persist(io, path)` / `persistAtomic(io, path)` | Both use journaled atomic writes; the latter makes the intent explicit |
 | | `persistTo(provider, io, path)` / `persistIfRevision(provider, expected_revision, io, path)` | Custom / CAS |
 | | `recover(allocator, io, path) !Runtime` | Restore |
 
@@ -363,7 +363,7 @@ meml.neural.retrievalProvider()
 | `compare_procedures` | `ids,scopes?,min_samples?,objectives` | `{ok,comparisons}`; conservative multi-objective comparison with explicit targets |
 | `feedback` | `target,outcome,failure_class,actor,receipt,timestamp,attestation?` | `{ok,evidence}` |
 | `set_attestation_verifier` | `issuers[{issuer,key_id,public_key}]` | `{ok}`; Base64 Ed25519 public keys |
-| `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,stats}` |
+| `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,stats}`; runs as an atomic in-memory transaction and rolls back this batch on failure |
 | `auto_consolidate` | `enable,…` | `{ok}` |
 | `signals` | `providers` | `{ok,providers}`; each entry may be a name or `{name,weight}` |
 | `backend` | `backend` | `{ok}`; `hybrid` is lexical ∪ local hash-vector candidates |

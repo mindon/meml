@@ -54,8 +54,8 @@ Runtime ────────> indexed symbolic backend (default)
 - 使用索引、向量、图和 `hybrid` 候选 provider；`backend.LocalSemantic` 可接入宿主本地 ANN，并通过 `backend.Hybrid` 与 lexical 候选去重并集。provider 仅返回 ID，不能绕过内核过滤与排序。
 - 添加元数据、嵌入、神经、版本化校准及宿主本地缓存 embedding 检索信号 provider；外部 provider 有显式权重并在 activation trace 中解释，而不改变内核评分合约。
 - 从重复经验派生 memory、belief、concept、procedure 和确定性 neural artifact；推导记录携带规则与来源。
-- 通过 `consolidatePending()` 执行作用域增量整合，或通过 `enableAutoConsolidation(policy)` 为后续 `observe()` 启用事件触发整合。默认 `observe()` 保持只写入经验、不自动改变派生结构。
-- 对冲突信念按情境处理：不同情境下互斥信念可同时 active；同情境冲突会进入 contested 并影响后续激活。
+- 通过 `consolidatePending()` 执行作用域增量整合，或通过 `enableAutoConsolidation(policy)` 为后续 `observe()` 启用事件触发整合。`observe()` 是 append-only：相同观察仍作为携带独立来源的经验保留；如需去重，应由调用方选择更高层策略。
+- 按情境处理显式反驳证据：整合会将其携带到派生 belief，使其进入 contested 并降低置信度。不同值本身不会虚构 contradiction 关系；备选项可在不同情境中同时 active。
 - 以原子整合 API 在内存失败时回滚完整运行时状态：语义图、推导记录、神经状态、ID、整合游标、待处理组、索引和运行时配置。
 - 通过兼容宿主 `FeedbackVerifier` 或 Ed25519 `FeedbackAttestationPolicy` 验证 actor 与 receipt 后，使用 `recordFeedback(FeedbackInput)` 将策略结果记录为 evidence；签名证明绑定目标语义、时效和 nonce，并在恢复后保持防重放。通过独立 `TransitionVerifier` 使用受限 `transition()` 或 DSL `transition` 提交可审计状态变化。两者均不直接执行宿主 Action。
 - 源语言对每条语句提供行级结构化诊断，支持 `link` / `unlink` 关系生命周期操作，并在整份程序事务中执行。

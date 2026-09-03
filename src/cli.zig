@@ -678,7 +678,7 @@ fn cmdFeedback(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer
 
 fn cmdConsolidate(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
     const policy = policyFrom(a, o);
-    const report = try state.runtime.consolidateWithPolicy(policy);
+    const report = try state.runtime.consolidateAllAtomic(policy);
 
     var resp = ObjectMap.empty;
     try resp.put(a, "ok", .{ .bool = true });

@@ -52,8 +52,14 @@ assert meml iel-recovery does-not-rebuild-the-runtime-by-general-event-replay bo
 
 # 默认 observe 只记录经验；整合路径形成长期结构。
 assert meml default-observe keeps-derived-structure-unchanged lifecycle confidence 0.99 as observe_boundary
+assert meml observe preserves-duplicate-semantic-observations-as-independent-experiences lifecycle confidence 0.99 as append_only_observe
+assert meml consolidation groups-append-only-experiences-by-semantic-payload-not-attached-metadata lifecycle confidence 0.99 as semantic_consolidation_groups
 assert meml consolidation derives-memory-belief-concept-procedure-and-artifacts lifecycle confidence 0.99 as consolidation
+assert meml consolidation propagates-explicit-contradictions-to-derived-beliefs conflict confidence 0.99 as conflict_propagation
+assert meml derived-beliefs-with-inherited-contradictions become-contested-and-confidence-penalized conflict confidence 0.99 as contested_beliefs
 assert meml atomic-consolidation restores-complete-runtime-state safety confidence 0.99 as atomicity
+assert meml atomic-persistence creates-missing-parent-directory-on-first-write durability confidence 0.99 as atomic_first_persist
+assert meml cli-consolidate uses-atomic-runtime-consolidation safety confidence 0.99 as cli_atomic_consolidation
 assert meml predicts-procedure-outcomes-from-cutoff-bounded-feedback dynamics capability confidence 0.99 as procedure_prediction
 assert meml quality-gates-explicit-procedure-candidates-by-stability-and-history dynamics capability confidence 0.99 as procedure_selection
 assert meml compares-explicit-procedures-by-conservative-multi-objective-evidence dynamics capability confidence 0.99 as procedure_comparison

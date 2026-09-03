@@ -264,7 +264,7 @@ metric 的 uncertainty 会以保守方向纳入：maximize 取 `value - uncertai
 | | `consolidateNeural(consolidator) !usize` | 确定性 neural 整合 |
 | | `enableAutoConsolidation(policy)` / `disableAutoConsolidation()` | 事件触发整合 |
 | 后端 | `useVectorBackend()` / `useGraphBackend()` | 切换候选 provider |
-| 持久化 | `persist(io, path)` / `persistAtomic(io, path)` | 保存（原子写入可选） |
+| 持久化 | `persist(io, path)` / `persistAtomic(io, path)` | 均采用 journal 原子写入；后者显式表达原子意图 |
 | | `persistTo(provider, io, path)` / `persistIfRevision(provider, expected_revision, io, path)` | 自定义 / CAS |
 | | `recover(allocator, io, path) !Runtime` | 恢复 |
 
@@ -363,7 +363,7 @@ meml.neural.retrievalProvider()
 | `compare_procedures` | `ids,scopes?,min_samples?,objectives` | `{ok,comparisons}`；显式目标的保守多目标比较 |
 | `feedback` | `target,outcome,failure_class,actor,receipt,timestamp,attestation?` | `{ok,evidence}` |
 | `set_attestation_verifier` | `issuers[{issuer,key_id,public_key}]` | `{ok}`；Base64 Ed25519 公钥 |
-| `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,统计}` |
+| `consolidate` | `repeat_threshold,procedure_success_ratio,enable_memory,…` | `{ok,统计}`；以原子内存事务执行，失败时回滚本轮派生变更 |
 | `auto_consolidate` | `enable,…` | `{ok}` |
 | `signals` | `providers` | `{ok,providers}`；元素可为名称或 `{name,weight}` |
 | `backend` | `backend` | `{ok}`；`hybrid` 为 lexical ∪ local hash-vector 候选 |

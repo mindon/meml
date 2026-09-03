@@ -6,9 +6,9 @@
 
 ### 默认：观察与派生分离
 
-`observe()` 只创建 `experience`、更新待处理指纹组，并使原始经验可参与检索。它不会自动创建 `memory`、`belief`、`concept` 或 `procedure`。这种默认行为保证既有调用方可以控制何时改变持久化语义结构。
+`observe()` 只创建 `experience`、更新待处理指纹组，并使原始经验可参与检索。它不会自动创建 `memory`、`belief`、`concept` 或 `procedure`。观察是 append-only：语义相同的写入仍保留为独立、可追溯的 experience；调用方若要写入期去重，必须在更高层显式实施。
 
-对三条相同经验的受控测试确认：观察后有 3 个 experience，尚无 memory、belief、concept、procedure 或关系；检索结果会因原始经验存在而变化。
+整合阶段按 `subject`、`predicate`、`object`、`context`、`result` 的语义载荷分组这些 append-only experience，不把附加 scopes、metrics、artifacts 或结构身份混入重复统计。对三条相同经验的受控测试确认：观察后有 3 个 experience，尚无 memory、belief、concept、procedure 或关系；检索结果会因原始经验存在而变化。
 
 ### 显式或事件触发整合
 
@@ -38,15 +38,16 @@ Agent 可先按 `Context` 检索候选策略、工具偏好或过程，再调用
 信念记录 `active`、`contested`、`superseded` 或 `archived` 生命周期状态，并保存支持次数、矛盾次数和确认时间。
 
 - 重复支持会提高信念强度并更新确认信息。
-- 同一情境下的互斥信念形成矛盾关系，降低置信度并标记为 contested。
-- 不同情境下的互斥信念可以同时保持 active；激活时由情境感知的冲突评分优先选择相关信念，同时保留另一信念用于历史解释。
+- 只有显式写入的 `contradicts` 关系才构成反驳证据；不同 object 值本身不会自动生成两两矛盾边。
+- 整合会把指向 source experience 的显式反驳关系传播到派生 belief：belief 保留来源反驳边、累计矛盾计数、进入 `contested` 并按反驳数量施加有界置信度惩罚。未解决矛盾不能被后续重复整合自动稳定化。
+- 不同情境的备选信念可以同时保持 active；激活时仅依据真实矛盾边计算情境感知冲突评分，并保留其他候选用于解释。
 - superseded 与 archived 信念会从后续常规检索中过滤。
 
 ## 原子整合与恢复
 
 原子整合会保存完整运行时快照：语义存储、ID 与时钟、派生索引、待处理组、整合游标、signal pipeline 以及自动整合配置。注入失败时恢复完整快照并重建后端索引；成功时才提交该批变更，待处理组可在回滚后重试。
 
-`persist()` 与 `persistAtomic()` 都将完整 `MEML15` 状态写入 `<path>.journal`，同步、校验后原子替换目标文件，并写入 `<path>.index.journal`：它保存语义 revision 与有序节点 ID 清单。恢复只接受 revision 和节点集合均匹配的索引 checkpoint；损坏、旧 revision 或不匹配的 checkpoint 会被删除，派生索引仍由语义状态重建。损坏的中断 index journal 不会覆盖已原子提交且匹配的 checkpoint。`recover()` 会检测遗留语义 journal：有效且更新的 journal 被重放，陈旧或无效 journal 被删除。远端 CAS 若提交成功后响应超时，调用方必须读取权威 revision 并恢复快照来消除歧义，不能盲目重试写入。持久化采用非阻塞单写者锁；锁文件保留稳定 inode，并发写入者收到 `WouldBlock`。
+`persist()` 与 `persistAtomic()` 都会在首次写入前创建缺失父目录，再将完整 `MEML15` 状态写入 `<path>.journal`，同步、校验后原子替换目标文件，并写入 `<path>.index.journal`：它保存语义 revision 与有序节点 ID 清单。恢复只接受 revision 和节点集合均匹配的索引 checkpoint；损坏、旧 revision 或不匹配的 checkpoint 会被删除，派生索引仍由语义状态重建。损坏的中断 index journal 不会覆盖已原子提交且匹配的 checkpoint。`recover()` 会检测遗留语义 journal：有效且更新的 journal 被重放，陈旧或无效 journal 被删除。远端 CAS 若提交成功后响应超时，调用方必须读取权威 revision 并恢复快照来消除歧义，不能盲目重试写入。持久化采用非阻塞单写者锁；锁文件保留稳定 inode，并发写入者收到 `WouldBlock`。
 
 本地保证范围是使用 MEML API 的文件系统调用。`storage.Remote.Transport` 由宿主实现 revision CAS 与语义快照恢复，`Runtime.recoverFrom()` 会重新校验快照并从语义记录重建派生索引；MEML 不自行发起网络请求，也不传输索引分片。认证、TLS、端点 allowlist、命名空间授权、幂等重试、目录元数据 fsync、生产远程存储一致性以及绕过 API 的锁协作不在当前保证范围内。
 

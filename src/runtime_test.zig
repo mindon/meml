@@ -835,6 +835,27 @@ test "automatic causal consolidation mutates persistent memory structure" {
     try std.testing.expect(result.items.len > 0);
 }
 
+test "consolidation handles hundreds of repeated groups without stale node pointers" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var group: usize = 0;
+    while (group < 512) : (group += 1) {
+        var object_buffer: [32]u8 = undefined;
+        const object = try std.fmt.bufPrint(&object_buffer, "tool-{d}", .{group});
+        _ = try runtime.observe("agent", "uses", object, "work", "success", @intCast(group * 2));
+        _ = try runtime.observe("agent", "uses", object, "work", "success", @intCast(group * 2 + 1));
+    }
+    const report = try runtime.consolidateWithPolicy(.{ .enable_concept = false, .enable_procedure = false, .enable_neural = false });
+    try std.testing.expectEqual(@as(usize, 1024), report.memories_created);
+    try std.testing.expectEqual(@as(usize, 512), report.beliefs_created);
+    var contradictions: usize = 0;
+    for (runtime.store.relations.items) |relation| {
+        if (relation.kind == .contradicts) contradictions += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), contradictions);
+    try std.testing.expect(runtime.store.relations.items.len < 3_000);
+}
+
 test "event-triggered consolidation evolves memory during observe" {
     var runtime = meml.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
@@ -987,25 +1008,27 @@ test "consolidation is idempotent and provenance survives reload" {
     try std.testing.expectEqualStrings("experience-to-memory", recovered.store.consolidations.items[0].rule);
 }
 
-test "belief conflict lowers confidence and creates contradiction relation" {
+test "consolidation preserves explicit contradictory evidence on derived beliefs" {
     var runtime = meml.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
-    _ = try runtime.observe("agent", "uses", "python", "work", "success", 1);
+    const disputed = try runtime.observe("agent", "uses", "python", "work", "success", 1);
     _ = try runtime.observe("agent", "uses", "python", "work", "success", 2);
-    _ = try runtime.observe("agent", "uses", "zig", "work", "success", 3);
+    const rebuttal = try runtime.observe("agent", "uses", "zig", "work", "success", 3);
     _ = try runtime.observe("agent", "uses", "zig", "work", "success", 4);
+    try runtime.contradict(rebuttal, disputed);
     _ = try runtime.consolidateAll();
-    var conflicts: usize = 0;
-    for (runtime.store.relations.items) |relation| {
-        if (relation.kind == .contradicts) conflicts += 1;
-    }
-    try std.testing.expect(conflicts > 0);
-    var lowered: usize = 0;
+
+    var derived: ?u64 = null;
     for (runtime.store.nodes.items) |node| {
-        if (node.kind == .belief and node.confidence < 0.7) lowered += 1;
-        if (node.kind == .belief and node.cognitive_state == .contested) try std.testing.expect(node.contradiction_count > 0);
+        if (node.kind == .belief and std.mem.eql(u8, node.object, "python") and std.mem.eql(u8, node.result, "consolidated repetition")) derived = node.id;
     }
-    try std.testing.expectEqual(@as(usize, 2), lowered);
+    try std.testing.expect(derived != null);
+    const belief_id = derived.?;
+    const belief = runtime.store.constNode(belief_id).?;
+    try std.testing.expectEqual(meml.CognitiveState.contested, belief.cognitive_state);
+    try std.testing.expect(belief.contradiction_count > 0);
+    try std.testing.expect(belief.confidence < 0.7);
+    try std.testing.expect(runtimeHasRelation(&runtime, rebuttal, belief_id, .contradicts));
 }
 
 test "belief lifecycle states filter retrieval and survive persistence" {
@@ -1030,7 +1053,7 @@ test "belief lifecycle states filter retrieval and survive persistence" {
     try std.testing.expect(recovered.store.constNode(old_belief).?.last_confirmed_at >= 0);
 }
 
-test "conflicting beliefs remain active across different situations" {
+test "different contextual alternatives do not imply a contradiction" {
     var runtime = meml.Runtime.init(std.testing.allocator);
     defer runtime.deinit();
     _ = try runtime.observe("agent", "uses", "python", "legacy", "success", 1);
@@ -1047,7 +1070,7 @@ test "conflicting beliefs remain active across different situations" {
         if (std.mem.eql(u8, node.object, "typescript")) current_belief = node.id;
         try std.testing.expectEqual(meml.CognitiveState.active, node.cognitive_state);
     }
-    try std.testing.expect(runtimeHasRelation(&runtime, legacy_belief, current_belief, .contradicts));
+    try std.testing.expect(!runtimeHasRelation(&runtime, legacy_belief, current_belief, .contradicts));
 
     var legacy = try runtime.activate(.{ .query = "uses", .situation = "legacy", .now = 4 }, 20, std.testing.allocator);
     defer legacy.deinit(std.testing.allocator);
@@ -1514,6 +1537,22 @@ test "calibrated signal checkpoint persists and affects retrieval" {
     defer after.deinit(std.testing.allocator);
     try std.testing.expect(after.items[0].signals.external > 0);
     try std.testing.expectError(error.InvalidSignalCalibration, recovered.setSignalCalibration(-0.1, 0));
+}
+
+test "atomic persistence creates a missing parent directory on first write" {
+    const directory = test_artifacts_dir ++ "/test-first-atomic-parent";
+    const path = directory ++ "/state";
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, directory) catch {};
+    std.Io.Dir.cwd().deleteTree(std.testing.io, directory) catch {};
+
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    _ = try runtime.observe("agent", "uses", "first-atomic-save", "local", "success", 1);
+    try runtime.persistAtomic(std.testing.io, path);
+
+    var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer recovered.deinit();
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.nodes.items.len);
 }
 
 test "default runtime persistence is journaled and atomic" {

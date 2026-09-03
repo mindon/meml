@@ -71,7 +71,9 @@ jobs:
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" --strip-components=1 -C "$ZIG_DIR"
           echo "$ZIG_DIR" >> "$GITHUB_PATH"
       - name: Build release binary
-        run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }} -Dversion="${TAG#v}"
       - name: Package meml
         env:
           ASSET: ${{ matrix.asset }}

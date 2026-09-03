@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const version = b.option([]const u8, "version", "MEML CLI version") orelse "0.3.0";
+    const version = b.option([]const u8, "version", "MEML CLI version") orelse "0.3.1";
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
 

@@ -275,7 +275,10 @@ pub const Runtime = struct {
         };
     }
     pub fn contradict(self: *Runtime, from: u64, to: u64) !void {
-        try self.link(from, .contradicts, to, 1);
+        if (self.store.constNode(from) == null or self.store.constNode(to) == null) return error.UnknownNode;
+        if (from == to) return error.InvalidRelation;
+        if (self.hasRelation(from, to, .contradicts)) return;
+        try self.store.link(.{ .from = from, .to = to, .kind = .contradicts, .weight = 1 });
         if (self.store.node(to)) |node| if (node.kind == .belief) {
             node.contradiction_count += 1;
             node.last_contradicted_at = self.clock;
@@ -1013,77 +1016,94 @@ pub const Runtime = struct {
         }
         try maybeAbort(policy, report);
 
-        var i: usize = 0;
-        while (i < experiences.items.len) : (i += 1) {
-            const left = self.store.constNode(experiences.items[i]).?;
-            const group_count = self.experience_groups.get(self.nodeFingerprint(left)) orelse 0;
-            if (group_count < policy.repeat_threshold) continue;
-            var repetitions: usize = 0;
-            for (experiences.items[i..]) |candidate_id| {
-                const candidate = self.store.constNode(candidate_id).?;
-                if (std.mem.eql(u8, left.subject, candidate.subject) and std.mem.eql(u8, left.predicate, candidate.predicate) and
-                    std.mem.eql(u8, left.object, candidate.object) and std.mem.eql(u8, left.context, candidate.context) and
-                    std.mem.eql(u8, left.result, candidate.result)) repetitions += 1;
+        const RepeatGroup = struct {
+            representative: u64,
+            last: u64,
+            repetitions: usize,
+            contradictions: usize = 0,
+        };
+        var repeat_groups = std.ArrayList(RepeatGroup).empty;
+        defer repeat_groups.deinit(self.allocator);
+        var repeat_group_index = std.AutoHashMap(u64, usize).init(self.allocator);
+        defer repeat_group_index.deinit();
+        var experience_group_index = std.AutoHashMap(u64, usize).init(self.allocator);
+        defer experience_group_index.deinit();
+        for (experiences.items) |experience_id| {
+            const experience = self.store.constNode(experience_id).?;
+            // Consolidation intentionally groups append-only observations by their
+            // semantic payload, regardless of attached metadata.
+            const key = fingerprint(experience.subject, experience.predicate, experience.object, experience.context, experience.result);
+            const entry = try repeat_group_index.getOrPut(key);
+            if (entry.found_existing) {
+                const group = &repeat_groups.items[entry.value_ptr.*];
+                group.last = experience_id;
+                group.repetitions += 1;
+            } else {
+                entry.value_ptr.* = repeat_groups.items.len;
+                try repeat_groups.append(self.allocator, .{ .representative = experience_id, .last = experience_id, .repetitions = 1 });
             }
-            if (!policy.enable_belief or repetitions < policy.repeat_threshold) continue;
-            var belief_id: ?u64 = null;
-            for (self.store.nodes.items) |node| if (node.kind == .belief and std.mem.eql(u8, node.result, "consolidated repetition") and sameSemantic(node, left.*)) {
-                belief_id = node.id;
-                break;
-            };
-            if (belief_id == null) {
-                belief_id = try self.make(.belief, left.subject, left.predicate, left.object, left.context, "consolidated repetition", @min(1, 0.5 + @as(f64, @floatFromInt(repetitions)) * 0.1), self.clock);
-                if (self.store.node(belief_id.?)) |belief| {
-                    belief.support_count = @intCast(repetitions);
+            try experience_group_index.put(experience_id, entry.value_ptr.*);
+        }
+        for (self.store.relations.items) |relation| {
+            if (relation.kind != .contradicts) continue;
+            if (experience_group_index.get(relation.to)) |group_index| repeat_groups.items[group_index].contradictions += 1;
+        }
+
+        if (policy.enable_belief) {
+            for (repeat_groups.items, 0..) |group, group_index| {
+                if (group.repetitions < policy.repeat_threshold) continue;
+                const left = self.store.constNode(group.representative).?;
+                var belief_id: ?u64 = null;
+                for (self.store.nodes.items) |node| if (node.kind == .belief and std.mem.eql(u8, node.result, "consolidated repetition") and sameSemantic(node, left.*)) {
+                    belief_id = node.id;
+                    break;
+                };
+                if (belief_id == null) {
+                    belief_id = try self.make(.belief, left.subject, left.predicate, left.object, left.context, "consolidated repetition", @min(1, 0.5 + @as(f64, @floatFromInt(group.repetitions)) * 0.1), self.clock);
+                    if (self.store.node(belief_id.?)) |belief| {
+                        belief.support_count = @intCast(group.repetitions);
+                        belief.last_confirmed_at = self.clock;
+                    }
+                    try self.recordRule(belief_id.?, "repeated-experience-to-belief", group.representative, group.last);
+                    report.beliefs_created += 1;
+                } else if (self.store.node(belief_id.?)) |belief| {
+                    belief.support_count += @intCast(group.repetitions);
                     belief.last_confirmed_at = self.clock;
+                    _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .reinforce, .amount = @min(0.25, 0.05 * @as(f64, @floatFromInt(group.repetitions))), .reason = "kernel repeated experience", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
+                    if (belief.cognitive_state == .contested and belief.contradiction_count == 0) _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .stabilize, .amount = 0.01, .reason = "kernel contradiction resolved", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
                 }
-                try self.recordRule(belief_id.?, "repeated-experience-to-belief", experiences.items[i], experiences.items[i + repetitions - 1]);
-                report.beliefs_created += 1;
-            } else if (self.store.node(belief_id.?)) |belief| {
-                belief.support_count += @intCast(repetitions);
-                belief.last_confirmed_at = self.clock;
-                _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .reinforce, .amount = @min(0.25, 0.05 * @as(f64, @floatFromInt(repetitions))), .reason = "kernel repeated experience", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                if (belief.cognitive_state == .contested and belief.support_count > belief.contradiction_count) _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .stabilize, .amount = 0.01, .reason = "kernel support majority", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
+                if (group.contradictions > 0) {
+                    var relation_index: usize = 0;
+                    while (relation_index < self.store.relations.items.len) : (relation_index += 1) {
+                        const relation = self.store.relations.items[relation_index];
+                        if (relation.kind != .contradicts) continue;
+                        const source_group_index = experience_group_index.get(relation.to) orelse continue;
+                        if (source_group_index != group_index) continue;
+                        try self.contradict(relation.from, belief_id.?);
+                    }
+                    _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .set_state, .target_state = .contested, .reason = "kernel inherited contradictory evidence", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
+                    _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .penalize, .amount = @min(0.8, 0.2 * @as(f64, @floatFromInt(group.contradictions))), .reason = "kernel inherited contradictory evidence", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
+                }
+                // `make` may reallocate self.store.nodes; resolve the representative
+                // again before reading it for the memory links.
+                const left_now = self.store.constNode(group.representative).?;
+                for (self.store.nodes.items) |node| if (node.kind == .memory and sameSemantic(node, left_now.*) and !self.hasRelation(belief_id.?, node.id, .derived_from)) {
+                    try self.store.link(.{ .from = belief_id.?, .to = node.id, .kind = .derived_from, .weight = 1 });
+                };
             }
-            for (self.store.nodes.items) |node| if (node.kind == .memory and sameSemantic(node, left.*) and !self.hasRelation(belief_id.?, node.id, .derived_from)) {
-                try self.store.link(.{ .from = belief_id.?, .to = node.id, .kind = .derived_from, .weight = 1 });
-            };
         }
         try maybeAbort(policy, report);
 
-        var beliefs = std.ArrayList(u64).empty;
+        // Keep value copies rather than pointers into `store.nodes`: later stages
+        // may append artifacts and reallocate the backing array.
+        var beliefs = std.ArrayList(model.Node).empty;
         defer beliefs.deinit(self.allocator);
-        for (self.store.nodes.items) |node| if (node.kind == .belief and std.mem.eql(u8, node.result, "consolidated repetition")) try beliefs.append(self.allocator, node.id);
-        for (beliefs.items, 0..) |left_id, left_index| {
-            const left = self.store.constNode(left_id).?;
-            for (beliefs.items[left_index + 1 ..]) |right_id| {
-                const right = self.store.constNode(right_id).?;
-                if (std.mem.eql(u8, left.subject, right.subject) and std.mem.eql(u8, left.predicate, right.predicate) and
-                    !std.mem.eql(u8, left.object, right.object))
-                {
-                    const same_context = std.mem.eql(u8, left.context, right.context);
-                    if (!self.hasRelation(left.id, right.id, .contradicts)) {
-                        try self.store.link(.{ .from = left.id, .to = right.id, .kind = .contradicts, .weight = 1 });
-                        if (same_context) {
-                            if (self.store.node(left.id)) |node| {
-                                node.contradiction_count += 1;
-                                node.last_contradicted_at = self.clock;
-                            }
-                            _ = try self.applyTransition(.{ .target = left.id, .kind = .set_state, .target_state = .contested, .cause = right.id, .reason = "kernel contextual contradiction", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                            _ = try self.applyTransition(.{ .target = left.id, .kind = .penalize, .amount = 0.2, .cause = right.id, .reason = "kernel contextual contradiction", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                            if (self.store.node(right.id)) |node| {
-                                node.contradiction_count += 1;
-                                node.last_contradicted_at = self.clock;
-                            }
-                            _ = try self.applyTransition(.{ .target = right.id, .kind = .set_state, .target_state = .contested, .cause = left.id, .reason = "kernel contextual contradiction", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                            _ = try self.applyTransition(.{ .target = right.id, .kind = .penalize, .amount = 0.2, .cause = left.id, .reason = "kernel contextual contradiction", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                        }
-                    }
-                }
-            }
-        }
+        for (self.store.nodes.items) |node| if (node.kind == .belief and std.mem.eql(u8, node.result, "consolidated repetition")) try beliefs.append(self.allocator, node);
+        // Different values alone are not proof of a contradiction. Consolidation
+        // carries only explicit contradictory evidence into derived beliefs, which
+        // prevents quadratic all-pairs conflict expansion for ordinary alternatives.
         if (policy.enable_concept and beliefs.items.len >= 2) {
-            const first = self.store.constNode(beliefs.items[0]).?;
+            const first = beliefs.items[0];
             const label = try std.fmt.allocPrint(self.allocator, "generalized {s}", .{first.predicate});
             defer self.allocator.free(label);
             var concept_id: ?u64 = null;
@@ -1092,31 +1112,30 @@ pub const Runtime = struct {
             }
             if (concept_id == null) {
                 concept_id = try self.make(.concept, first.subject, "generalizes", label, first.context, "automatic generalization", 0.7, self.clock);
-                try self.recordRule(concept_id.?, "beliefs-to-concept", beliefs.items[0], beliefs.items[1]);
+                try self.recordRule(concept_id.?, "beliefs-to-concept", beliefs.items[0].id, beliefs.items[1].id);
                 report.concepts_created = 1;
             }
-            for (beliefs.items) |belief| if (!self.hasRelation(concept_id.?, belief, .generalizes)) try self.store.link(.{ .from = concept_id.?, .to = belief, .kind = .generalizes, .weight = 1 });
+            for (beliefs.items) |belief| if (!self.hasRelation(concept_id.?, belief.id, .generalizes)) try self.store.link(.{ .from = concept_id.?, .to = belief.id, .kind = .generalizes, .weight = 1 });
         }
         try maybeAbort(policy, report);
 
-        var procedure_experiences = std.ArrayList(u64).empty;
+        var procedure_experiences = std.ArrayList(model.Node).empty;
         defer procedure_experiences.deinit(self.allocator);
-        if (policy.enable_procedure) {
-            for (self.store.fingerprint_members.items) |member| try procedure_experiences.append(self.allocator, member.experience);
-            if (procedure_experiences.items.len == 0) for (experiences.items) |id| try procedure_experiences.append(self.allocator, id);
-        }
+        if (policy.enable_procedure) for (self.store.nodes.items) |node| {
+            if (node.kind == .experience) try procedure_experiences.append(self.allocator, node);
+        };
         if (policy.enable_procedure and procedure_experiences.items.len >= 2) {
             var order_index: usize = 1;
             while (order_index < procedure_experiences.items.len) : (order_index += 1) {
                 var position = order_index;
-                while (position > 0 and self.store.constNode(procedure_experiences.items[position - 1]).?.timestamp > self.store.constNode(procedure_experiences.items[position]).?.timestamp) {
+                while (position > 0 and procedure_experiences.items[position - 1].timestamp > procedure_experiences.items[position].timestamp) {
                     const temp = procedure_experiences.items[position - 1];
                     procedure_experiences.items[position - 1] = procedure_experiences.items[position];
                     procedure_experiences.items[position] = temp;
                     position -= 1;
                 }
             }
-            const first = self.store.constNode(procedure_experiences.items[0]).?;
+            const first = procedure_experiences.items[0];
             const name = try std.fmt.allocPrint(self.allocator, "learned {s} sequence", .{first.predicate});
             defer self.allocator.free(name);
             var procedure_id: ?u64 = null;
@@ -1124,17 +1143,17 @@ pub const Runtime = struct {
                 if (node.kind == .procedure and std.mem.eql(u8, node.object, name)) procedure_id = node.id;
             }
             var success_count: usize = 0;
-            for (procedure_experiences.items) |experience_id| {
-                if (std.mem.eql(u8, self.store.constNode(experience_id).?.result, "success")) success_count += 1;
+            for (procedure_experiences.items) |experience| {
+                if (std.mem.eql(u8, experience.result, "success")) success_count += 1;
             }
             const success_ratio = @as(f64, @floatFromInt(success_count)) / @as(f64, @floatFromInt(procedure_experiences.items.len));
             if (success_ratio >= policy.procedure_success_ratio) {
                 if (procedure_id == null) {
                     procedure_id = try self.make(.procedure, first.subject, "performs", name, first.context, "automatic sequence", 0.7, self.clock);
-                    try self.recordRule(procedure_id.?, "ordered-successful-experiences-to-procedure", procedure_experiences.items[0], procedure_experiences.items[procedure_experiences.items.len - 1]);
+                    try self.recordRule(procedure_id.?, "ordered-successful-experiences-to-procedure", procedure_experiences.items[0].id, procedure_experiences.items[procedure_experiences.items.len - 1].id);
                     report.procedures_created = 1;
                 }
-                for (procedure_experiences.items, 0..) |experience, index| if (!self.hasRelation(procedure_id.?, experience, .follows)) try self.store.link(.{ .from = procedure_id.?, .to = experience, .kind = .follows, .weight = 1 / @as(f64, @floatFromInt(index + 1)) });
+                for (procedure_experiences.items, 0..) |experience, index| if (!self.hasRelation(procedure_id.?, experience.id, .follows)) try self.store.link(.{ .from = procedure_id.?, .to = experience.id, .kind = .follows, .weight = 1 / @as(f64, @floatFromInt(index + 1)) });
             }
         }
         try maybeAbort(policy, report);
