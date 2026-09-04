@@ -7,6 +7,7 @@ pub const Store = @import("store.zig").Store;
 pub const Runtime = @import("runtime.zig").Runtime;
 pub const source = @import("source.zig");
 pub const storage = @import("storage.zig");
+pub const celld_storage = @import("celld_storage.zig");
 pub const retrieval = @import("retrieval.zig");
 pub const persistence = @import("persistence.zig");
 pub const index_journal = @import("index_journal.zig");

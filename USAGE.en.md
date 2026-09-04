@@ -346,6 +346,7 @@ meml.neural.retrievalProvider()
 |---|---|---|
 | `ping` | — | `{ok,pong}` |
 | `observe` | `subject,predicate,object,context,result,timestamp` | `{ok,id}` |
+| `observe_persist` | `subject,predicate,object,context,result,timestamp,storage?,path?,atomic?` | `{ok,id,revision,…}`; one-shot `recover → observe → consolidate → persist`, treating missing state as fresh |
 | `assert` | `subject,predicate,object,context,confidence` | `{ok,id}` |
 | `remember` | `id` | `{ok,id}` |
 | `infer` | `id` | `{ok,id}` |
@@ -367,8 +368,8 @@ meml.neural.retrievalProvider()
 | `auto_consolidate` | `enable,…` | `{ok}` |
 | `signals` | `providers` | `{ok,providers}`; each entry may be a name or `{name,weight}` |
 | `backend` | `backend` | `{ok}`; `hybrid` is lexical ∪ local hash-vector candidates |
-| `persist` | `path?,atomic` | `{ok}`; defaults to `~/.meml/state/memory.state` when `path` is omitted |
-| `recover` | `path?` | `{ok}`; defaults to `~/.meml/state/memory.state` when `path` is omitted |
+| `persist` | `storage?,path?,atomic` | `{ok,revision}`; local by default; `storage:"celld"` uses controlled Worker CAS |
+| `recover` | `storage?,path?` | `{ok,revision}`; local by default; `storage:"celld"` restores from the controlled Worker |
 | `import_meml` | `files` | `{ok,documents,observed,asserted,links}`; atomically imports multiple restricted `.meml` files |
 | `exec` | `program` | `{ok,stats}` |
 | `set_verifier` | `trusted_actors,receipt_prefix` | `{ok}` |
@@ -397,6 +398,25 @@ Text matching uses the shared `tokenizer-ascii-v1`: ASCII case normalization wit
 ```
 
 When no `path` is supplied, both `persist` and `recover` use `~/.meml/state/memory.state`; `persist` creates the parent directory. Integrations should prefer `MEML_STATE_PATH` and use distinct Agent filenames (such as `codebuddy.state`) to avoid accidental cross-host state sharing.
+
+#### Optional celld Worker storage
+
+celld does not expose a generic public KV/DO REST API, so MEML stores one `MEML15` snapshot through an application Worker deployed on celld. CLI requests use `"storage":"celld"`; the endpoint and credentials are startup-only environment configuration and cannot be overridden by request JSON:
+
+```sh
+export CELLD_MEML_ENDPOINT='https://memory.example'
+export CELLD_MEML_KEY='agent_1'          # optional; defaults to default; [A-Za-z0-9_-], max 128
+export CELLD_MEML_TOKEN='…'              # optional; sent as a Bearer token
+```
+
+The Worker must route one key to one Durable Object and implement this controlled contract: `GET /v1/meml/:key` returns raw `MEML15` (`200`) or `404`; `PUT /v1/meml/:key` accepts raw `MEML15`, atomically compares the current revision against `If-Match: "<revision>"`, returns `200`, `201`, or `204` on success, and returns `409` or `412` for a stale writer. The client sends a stable `Idempotency-Key` and optional `Authorization: Bearer`. Each successful write has revision `expected + 1`; after a timeout or disconnect, recover the authoritative revision instead of blindly retrying. celld `503`/admission overload maps to `RemoteOverloaded`.
+
+```jsonl
+{"op":"recover","storage":"celld"}
+{"op":"observe_persist","storage":"celld","subject":"agent","predicate":"learned","object":"celld CAS","timestamp":1}
+```
+
+Production endpoints must use HTTPS. Plain HTTP is accepted only for `localhost`, `127.0.0.1`, and `[::1]` with `celld dev`. Never use celld's `--internal-listen` operator interface or provide bucket credentials to the MEML process.
 
 ### 3.4 Shell example
 

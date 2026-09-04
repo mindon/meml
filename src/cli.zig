@@ -127,6 +127,15 @@ fn ensureParentDirectory(io: std.Io, path: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(io, path[0..separator]);
 }
 
+const StorageKind = enum { local, celld };
+
+fn storageKindFrom(o: ObjectMap) !StorageKind {
+    const value = fOptStr(o, "storage");
+    if (value.len == 0 or std.mem.eql(u8, value, "local")) return .local;
+    if (std.mem.eql(u8, value, "celld")) return .celld;
+    return error.InvalidStorage;
+}
+
 fn decodeBase64Exact(comptime length: usize, encoded: []const u8) ![length]u8 {
     const decoded_length = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch return error.InvalidBase64;
     if (decoded_length != length) return error.InvalidBase64;
@@ -731,22 +740,107 @@ fn cmdBackend(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer)
 }
 
 fn cmdPersist(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
-    const path = try requestedStatePath(state.environ, o, a);
-    try ensureParentDirectory(state.io, path);
-    if (fBool(o, "atomic", false)) {
-        try state.runtime.persistAtomic(state.io, path);
-    } else {
-        try state.runtime.persist(state.io, path);
+    switch (try storageKindFrom(o)) {
+        .local => {
+            const path = try requestedStatePath(state.environ, o, a);
+            try ensureParentDirectory(state.io, path);
+            if (fBool(o, "atomic", false)) {
+                try state.runtime.persistAtomic(state.io, path);
+            } else {
+                try state.runtime.persist(state.io, path);
+            }
+        },
+        .celld => {
+            var configured = try meml.celld_storage.fromEnvironment(state.allocator, state.environ);
+            defer configured.deinit();
+            var celld = try meml.celld_storage.Provider.init(configured.config);
+            try state.runtime.persistIfRevision(celld.provider(), state.runtime.revision, state.io, configured.config.key);
+        },
     }
-    try writeValue(writer, .{ .object = okObject(a) });
+    var response = okObject(a);
+    try response.put(a, "revision", .{ .integer = @intCast(state.runtime.revision) });
+    try writeValue(writer, .{ .object = response });
 }
 
 fn cmdRecover(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
-    const path = try requestedStatePath(state.environ, o, a);
-    const fresh = try meml.Runtime.recover(state.allocator, state.io, path);
+    const fresh = switch (try storageKindFrom(o)) {
+        .local => blk: {
+            const path = try requestedStatePath(state.environ, o, a);
+            break :blk try meml.Runtime.recover(state.allocator, state.io, path);
+        },
+        .celld => blk: {
+            var configured = try meml.celld_storage.fromEnvironment(state.allocator, state.environ);
+            defer configured.deinit();
+            var celld = try meml.celld_storage.Provider.init(configured.config);
+            break :blk try meml.Runtime.recoverFrom(state.allocator, celld.provider(), state.io, configured.config.key);
+        },
+    };
     state.runtime.deinit();
     state.runtime = fresh;
-    try writeValue(writer, .{ .object = okObject(a) });
+    var response = okObject(a);
+    try response.put(a, "revision", .{ .integer = @intCast(state.runtime.revision) });
+    try writeValue(writer, .{ .object = response });
+}
+
+/// One-shot hosts cannot retain the JSONL process between UI events. This
+/// operation performs the full recover → observe → consolidate → persist
+/// lifecycle in one request, retaining the same Runtime semantics as the
+/// long-running bridge without requiring a shell or another language.
+fn cmdObservePersist(state: *State, o: ObjectMap, a: Allocator, writer: *std.Io.Writer) !void {
+    const storage_kind = try storageKindFrom(o);
+    var configured: ?meml.celld_storage.OwnedConfig = null;
+    defer if (configured) |*value| value.deinit();
+    var celld: ?meml.celld_storage.Provider = null;
+    const recovered = switch (storage_kind) {
+        .local => blk: {
+            const path = try requestedStatePath(state.environ, o, a);
+            break :blk meml.Runtime.recover(state.allocator, state.io, path) catch |err| switch (err) {
+                error.FileNotFound => meml.Runtime.init(state.allocator),
+                else => return err,
+            };
+        },
+        .celld => blk: {
+            configured = try meml.celld_storage.fromEnvironment(state.allocator, state.environ);
+            celld = try meml.celld_storage.Provider.init(configured.?.config);
+            break :blk meml.Runtime.recoverFrom(state.allocator, celld.?.provider(), state.io, configured.?.config.key) catch |err| switch (err) {
+                error.FileNotFound => meml.Runtime.init(state.allocator),
+                else => return err,
+            };
+        },
+    };
+    state.runtime.deinit();
+    state.runtime = recovered;
+
+    const object = fStr(o, "object") orelse return error.MissingObject;
+    if (object.len == 0) return error.MissingObject;
+    const id = try state.runtime.observe(
+        fOptStr(o, "subject"),
+        fOptStr(o, "predicate"),
+        object,
+        fOptStr(o, "context"),
+        fOptStr(o, "result"),
+        fInt(o, "timestamp", 0),
+    );
+    const report = try state.runtime.consolidateAllAtomic(policyFrom(a, o));
+    switch (storage_kind) {
+        .local => {
+            const path = try requestedStatePath(state.environ, o, a);
+            try ensureParentDirectory(state.io, path);
+            if (fBool(o, "atomic", true)) {
+                try state.runtime.persistAtomic(state.io, path);
+            } else {
+                try state.runtime.persist(state.io, path);
+            }
+        },
+        .celld => try state.runtime.persistIfRevision(celld.?.provider(), state.runtime.revision, state.io, configured.?.config.key),
+    }
+
+    var response = ObjectMap.empty;
+    try response.put(a, "ok", .{ .bool = true });
+    try response.put(a, "id", .{ .integer = @intCast(id) });
+    try response.put(a, "revision", .{ .integer = @intCast(state.runtime.revision) });
+    try putReport(&response, a, report);
+    try writeValue(writer, .{ .object = response });
 }
 
 fn isSafeImportPath(path: []const u8) bool {
@@ -986,6 +1080,7 @@ fn dispatch(state: *State, op: []const u8, o: ObjectMap, a: Allocator, writer: *
     if (std.mem.eql(u8, op, "backend")) return cmdBackend(state, o, a, writer);
     if (std.mem.eql(u8, op, "persist")) return cmdPersist(state, o, a, writer);
     if (std.mem.eql(u8, op, "recover")) return cmdRecover(state, o, a, writer);
+    if (std.mem.eql(u8, op, "observe_persist")) return cmdObservePersist(state, o, a, writer);
     if (std.mem.eql(u8, op, "import_meml")) return cmdImportMeml(state, o, a, writer);
     if (std.mem.eql(u8, op, "exec")) return cmdExec(state, o, a, writer);
     if (std.mem.eql(u8, op, "set_verifier")) return cmdSetVerifier(state, o, a, writer);
@@ -1074,7 +1169,7 @@ const help_text =
     \\
     \\Ops: ping observe assert remember infer link unlink support contradict
     \\     transition supersede generalize procedure predict_procedure select_procedures compare_procedures activate feedback
-    \\     consolidate auto_consolidate signals backend persist recover import_meml exec
+    \\     consolidate auto_consolidate signals backend persist recover observe_persist import_meml exec
     \\     set_verifier set_attestation_verifier clear_verifier set_plasticity_policy
     \\
 ;

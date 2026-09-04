@@ -60,7 +60,7 @@ Runtime ────────> indexed symbolic backend (default)
 - 通过兼容宿主 `FeedbackVerifier` 或 Ed25519 `FeedbackAttestationPolicy` 验证 actor 与 receipt 后，使用 `recordFeedback(FeedbackInput)` 将策略结果记录为 evidence；签名证明绑定目标语义、时效和 nonce，并在恢复后保持防重放。通过独立 `TransitionVerifier` 使用受限 `transition()` 或 DSL `transition` 提交可审计状态变化。两者均不直接执行宿主 Action。
 - 源语言对每条语句提供行级结构化诊断，支持 `link` / `unlink` 关系生命周期操作，并在整份程序事务中执行。
 - `evaluateAgentSuite()` 覆盖多任务与上下文漂移；`evaluateAnnotatedTasks()` 支持多标签分级相关性，`zig build eval` 执行冻结的 `retrieval-v1` 数据集与 Recall/MRR/NDCG CI 基线。
-- 使用 journal 与单调 revision 恢复中断的本地原子写入，并通过本地 `VersionedProvider` CAS 拒绝陈旧写者竞争。
+- 使用 journal 与单调 revision 恢复中断的本地原子写入，并通过本地 `VersionedProvider` CAS 拒绝陈旧写者竞争；可选的 `celld_storage` 通过受控 Worker endpoint 保存同一 `MEML15` 快照并执行远端 CAS。
 - 持久化、恢复并用于检索的确定性 `NeuralState`，以及 `calibrated` provider 的版本化权重与偏置；它们是透明参考状态，不是训练模型参数。
 - 通过 Zig 库 `meml.iel.Evolution` 记录观察、声明、推导、佐证、矛盾、替代、归档/撤销、决策依赖与经宿主验证的反馈；`verificationCandidates()` 仅排序待复核项，不验证来源、调用工具或执行 Action。
 

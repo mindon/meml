@@ -40,6 +40,11 @@ assert meml plasticity-policy configures-verified-bounded-state-adjustments safe
 assert meml provides-verified-audited-cognitive-state-transitions dynamics capability confidence 0.99 as dynamic_kernel
 assert meml derives-stability-attractors-and-bounded-state-propagation dynamics capability confidence 0.99 as dynamics_stability
 assert meml revision-cas rejects-stale-writers durability confidence 0.99 as cas
+assert meml celld-storage persists-canonical-meml15-snapshots-through-a-controlled-worker durability confidence 0.99 as celld_storage
+assert meml celld-storage uses-if-match-revision-cas-and-idempotency-keys durability confidence 0.99 as celld_cas
+assert meml celld-storage keeps-endpoint-key-and-token-in-startup-environment safety confidence 0.99 as celld_configuration_boundary
+assert meml celld-storage rejects-insecure-non-loopback-http-and-internal-operator-apis safety confidence 0.99 as celld_network_boundary
+assert meml celld-storage requires-host-owned-worker-auth-and-namespace-authorization boundary confidence 0.99 as celld_host_boundary
 
 # 信息演化门面：IEL 仅通过 Zig 库 API 暴露，不新增 .meml 或 CLI 命令。
 assert meml iel-facade records-information-kind-trust-retention-source-and-bitemporal-validity capability confidence 0.99 as iel_metadata
@@ -67,7 +72,7 @@ assert meml compares-explicit-procedures-by-conservative-multi-objective-evidenc
 # 评测和当前边界。
 assert meml evaluation supports-annotated-multitask-and-context-drift-suites quality confidence 0.99 as evaluation_suite
 assert meml evaluation applies-recall-mrr-ndcg-quality-gates quality confidence 0.99 as retrieval_evaluation
-assert meml full-index-shards-and-production-remote-service pending boundary confidence 0.99 as roadmap
+assert meml full-index-shards-and-generic-remote-service pending boundary confidence 0.99 as roadmap
 
 # Agent 应用闭环：经验证的执行结果会成为 evidence 并影响后续上下文检索。
 assert meml strategy-feedback improves-future-contextual-selection agent confidence 0.8 as feedback_loop
@@ -89,6 +94,11 @@ link signal_weights supports provider_trace weight 1
 link trace_capacity supports provider_trace weight 1
 link model_boundary supports embedding_boundary weight 1
 link meml15 supports durable_state weight 1
+link celld_storage supports durable_state weight 1
+link celld_cas supports cas weight 1
+link celld_configuration_boundary supports safety weight 1
+link celld_network_boundary supports safety weight 1
+link celld_host_boundary supports provider_boundary weight 1
 link iel_metadata supports durable_state weight 1
 link iel_ledger supports durable_state weight 1
 link iel_snapshot supports durable_state weight 1

@@ -59,7 +59,7 @@ Runtime ────────> indexed symbolic backend (default)
 - Record policy outcomes as evidence with `recordFeedback(FeedbackInput)` or source-language `feedback` by default. Installing a host `FeedbackVerifier` or Ed25519 `FeedbackAttestationPolicy` explicitly requires its proof before feedback writes; use a separate `TransitionVerifier` with bounded `transition()` or DSL `transition` for auditable state changes. Neither boundary directly executes a host Action.
 - Source language provides per-statement structured diagnostics, supports `link` / `unlink` relationship lifecycle operations, and executes whole programs as a transaction.
 - `evaluateAgentSuite()` covers multi-task and context drift; `evaluateAnnotated()` accepts human-annotated sets with task IDs and graded relevance, and can enforce Recall/MRR/NDCG quality gates.
-- Recover interrupted local atomic writes using a journal and a monotonic revision, and reject stale writers through the local `VersionedProvider` CAS.
+- Recover interrupted local atomic writes using a journal and a monotonic revision, reject stale writers through the local `VersionedProvider` CAS, and optionally persist the same `MEML15` snapshot through a controlled celld Worker endpoint with remote CAS.
 - Persist, recover, and retrieve the deterministic `NeuralState`, and versioned weights and biases for `calibrated` providers; these are transparent reference states, not trained model parameters.
 - Use the Zig-library `meml.iel.Evolution` to record observations, declarations, derivations, corroboration, contradictions, supersession, archival/revocation, decision dependencies, and host-verified feedback. `verificationCandidates()` only ranks review work; it never verifies sources, calls tools, or executes Actions.
 

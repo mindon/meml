@@ -346,6 +346,7 @@ meml.neural.retrievalProvider()
 |---|---|---|
 | `ping` | — | `{ok,pong}` |
 | `observe` | `subject,predicate,object,context,result,timestamp` | `{ok,id}` |
+| `observe_persist` | `subject,predicate,object,context,result,timestamp,storage?,path?,atomic?` | `{ok,id,revision,…}`；单次完成 `recover → observe → consolidate → persist`，状态不存在时按全新记忆处理 |
 | `assert` | `subject,predicate,object,context,confidence` | `{ok,id}` |
 | `remember` | `id` | `{ok,id}` |
 | `infer` | `id` | `{ok,id}` |
@@ -367,8 +368,8 @@ meml.neural.retrievalProvider()
 | `auto_consolidate` | `enable,…` | `{ok}` |
 | `signals` | `providers` | `{ok,providers}`；元素可为名称或 `{name,weight}` |
 | `backend` | `backend` | `{ok}`；`hybrid` 为 lexical ∪ local hash-vector 候选 |
-| `persist` | `path?,atomic` | `{ok}`；未给 `path` 时使用 `~/.meml/state/memory.state` |
-| `recover` | `path?` | `{ok}`；未给 `path` 时使用 `~/.meml/state/memory.state` |
+| `persist` | `storage?,path?,atomic` | `{ok,revision}`；默认本地文件；`storage:"celld"` 使用受控 Worker CAS |
+| `recover` | `storage?,path?` | `{ok,revision}`；默认本地文件；`storage:"celld"` 从受控 Worker 恢复 |
 | `import_meml` | `files` | `{ok,documents,observed,asserted,links}`；原子导入多个受限 `.meml` 文件 |
 | `exec` | `program` | `{ok,统计}` |
 | `set_verifier` | `trusted_actors,receipt_prefix` | `{ok}` |
@@ -396,6 +397,25 @@ meml.neural.retrievalProvider()
 ```
 
 `persist` 和 `recover` 未提供 `path` 时都使用 `~/.meml/state/memory.state`；`persist` 会创建该父目录。集成应优先使用 `MEML_STATE_PATH`，并按 Agent 使用不同文件名（例如 `codebuddy.state`），避免不同宿主误共享状态。
+
+#### 可选 celld Worker 存储
+
+celld 不提供通用的公网 KV/DO REST API；MEML 因而通过部署在 celld 上的**业务 Worker**存储单个 `MEML15` 快照。CLI 请求使用 `"storage":"celld"`，端点和凭据只能在启动环境配置，不能由 JSON 请求覆盖：
+
+```sh
+export CELLD_MEML_ENDPOINT='https://memory.example'
+export CELLD_MEML_KEY='agent_1'          # 可选，默认 default；仅 [A-Za-z0-9_-]，最长 128
+export CELLD_MEML_TOKEN='…'              # 可选，作为 Bearer token 发送
+```
+
+Worker 必须将同一 key 路由到同一个 Durable Object，并实现以下受控契约：`GET /v1/meml/:key` 返回原始 `MEML15`（`200`）或 `404`；`PUT /v1/meml/:key` 接收原始 `MEML15`，以 `If-Match: "<revision>"` 原子比较当前 revision，成功返回 `200`、`201` 或 `204`，陈旧写返回 `409` 或 `412`。客户端会发送稳定的 `Idempotency-Key` 和可选 `Authorization: Bearer`。每个写入的实际 revision 是 `expected + 1`；超时或断连后不要盲目重试，应先 `recover` 获取权威 revision。celld 的 `503`/过载会映射为 `RemoteOverloaded`。
+
+```jsonl
+{"op":"recover","storage":"celld"}
+{"op":"observe_persist","storage":"celld","subject":"agent","predicate":"learned","object":"celld CAS","timestamp":1}
+```
+
+生产端点必须使用 HTTPS；仅 `localhost`、`127.0.0.1` 和 `[::1]` 可使用 HTTP 以配合 `celld dev`。不要连接 celld 的 `--internal-listen` 运维接口，也不要把 bucket 凭据交给 MEML 进程。
 
 ### 3.4 Shell 示例
 

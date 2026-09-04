@@ -83,13 +83,12 @@ fn optionalScaled(value: ?[]const u8) !?f64 {
     return try scaled(raw);
 }
 
-pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i64, io: std.Io, path: []const u8) !void {
+/// Serializes a validated snapshot to any writer. Remote providers reuse this
+/// canonical MEML15 representation so their semantics cannot diverge from the
+/// local filesystem format.
+pub fn writeSnapshot(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i64, writer: *std.Io.Writer) !void {
     try store.validate();
-    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
-    defer file.close(io);
-    var buffer: [4096]u8 = undefined;
-    var writer = file.writer(io, &buffer);
-    try writer.interface.print("MEML15 {d} {d} {d}\n", .{ revision, next_id, clock });
+    try writer.print("MEML15 {d} {d} {d}\n", .{ revision, next_id, clock });
     for (store.nodes.items) |node| {
         const subject = try encode(store.allocator, node.subject);
         defer store.allocator.free(subject);
@@ -101,14 +100,14 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         defer store.allocator.free(context);
         const result = try encode(store.allocator, node.result);
         defer store.allocator.free(result);
-        try writer.interface.print("N|{d}|{s}|{s}|{s}|{s}|{s}|{s}|{d}|{d}|{d}|{s}|{d}|{d}|{d}|{d}\n", .{ node.id, @tagName(node.kind), subject, predicate, object, context, result, node.timestamp, @as(i64, @intFromFloat(node.confidence * 1_000_000)), @as(i64, @intFromFloat(node.strength * 1_000_000)), @tagName(node.cognitive_state), node.support_count, node.contradiction_count, node.last_confirmed_at, node.last_contradicted_at });
+        try writer.print("N|{d}|{s}|{s}|{s}|{s}|{s}|{s}|{d}|{d}|{d}|{s}|{d}|{d}|{d}|{d}\n", .{ node.id, @tagName(node.kind), subject, predicate, object, context, result, node.timestamp, @as(i64, @intFromFloat(node.confidence * 1_000_000)), @as(i64, @intFromFloat(node.strength * 1_000_000)), @tagName(node.cognitive_state), node.support_count, node.contradiction_count, node.last_confirmed_at, node.last_contradicted_at });
     }
     for (store.scoped_records.items) |record| {
         const key = try encode(store.allocator, record.scope.key);
         defer store.allocator.free(key);
         const value = try encode(store.allocator, record.scope.value);
         defer store.allocator.free(value);
-        try writer.interface.print("S|{d}|{s}|{s}\n", .{ record.node, key, value });
+        try writer.print("S|{d}|{s}|{s}\n", .{ record.node, key, value });
     }
     for (store.metric_records.items) |record| {
         const name = try encode(store.allocator, record.metric.name);
@@ -116,9 +115,9 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         const unit = try encode(store.allocator, record.metric.unit);
         defer store.allocator.free(unit);
         if (record.metric.uncertainty) |uncertainty| {
-            try writer.interface.print("T|{d}|{s}|{d}|{s}|{d}|{s}\n", .{ record.node, name, @as(i64, @intFromFloat(record.metric.value * 1_000_000)), unit, @as(i64, @intFromFloat(uncertainty * 1_000_000)), @tagName(record.metric.direction) });
+            try writer.print("T|{d}|{s}|{d}|{s}|{d}|{s}\n", .{ record.node, name, @as(i64, @intFromFloat(record.metric.value * 1_000_000)), unit, @as(i64, @intFromFloat(uncertainty * 1_000_000)), @tagName(record.metric.direction) });
         } else {
-            try writer.interface.print("T|{d}|{s}|{d}|{s}|-|{s}\n", .{ record.node, name, @as(i64, @intFromFloat(record.metric.value * 1_000_000)), unit, @tagName(record.metric.direction) });
+            try writer.print("T|{d}|{s}|{d}|{s}|-|{s}\n", .{ record.node, name, @as(i64, @intFromFloat(record.metric.value * 1_000_000)), unit, @tagName(record.metric.direction) });
         }
     }
     for (store.artifact_records.items) |record| {
@@ -128,37 +127,37 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         defer store.allocator.free(digest);
         const locator = try encode(store.allocator, record.artifact.locator);
         defer store.allocator.free(locator);
-        try writer.interface.print("A|{d}|{s}|{s}|{s}\n", .{ record.node, kind, digest, locator });
+        try writer.print("A|{d}|{s}|{s}|{s}\n", .{ record.node, kind, digest, locator });
     }
     for (store.structure_records.items) |record| {
         const kind = try encode(store.allocator, record.structure.kind);
         defer store.allocator.free(kind);
         const fingerprint = try encode(store.allocator, record.structure.fingerprint);
         defer store.allocator.free(fingerprint);
-        try writer.interface.print("H|{d}|{s}|{s}\n", .{ record.node, kind, fingerprint });
+        try writer.print("H|{d}|{s}|{s}\n", .{ record.node, kind, fingerprint });
     }
-    for (store.relations.items) |relation| try writer.interface.print("R|{d}|{d}|{s}|{d}\n", .{ relation.from, relation.to, @tagName(relation.kind), @as(i64, @intFromFloat(relation.weight * 1_000_000)) });
+    for (store.relations.items) |relation| try writer.print("R|{d}|{d}|{s}|{d}\n", .{ relation.from, relation.to, @tagName(relation.kind), @as(i64, @intFromFloat(relation.weight * 1_000_000)) });
     for (store.consolidations.items) |record| {
         const rule = try encode(store.allocator, record.rule);
         defer store.allocator.free(rule);
-        try writer.interface.print("C|{d}|{s}|{d}|{d}|{d}\n", .{ record.artifact, rule, record.version, record.source_a, record.source_b });
+        try writer.print("C|{d}|{s}|{d}|{d}|{d}\n", .{ record.artifact, rule, record.version, record.source_a, record.source_b });
     }
-    for (store.fingerprint_groups.items) |group| try writer.interface.print("G|{d}|{d}\n", .{ group.fingerprint, group.count });
-    for (store.fingerprint_members.items) |member| try writer.interface.print("M|{d}|{d}\n", .{ member.fingerprint, member.experience });
-    for (store.neural_states.items) |state| try writer.interface.print("L|{d}|{d}|{d}|{d}\n", .{ state.artifact, state.activation_count, @as(i64, @intFromFloat(state.strength * 1_000_000)), state.version });
+    for (store.fingerprint_groups.items) |group| try writer.print("G|{d}|{d}\n", .{ group.fingerprint, group.count });
+    for (store.fingerprint_members.items) |member| try writer.print("M|{d}|{d}\n", .{ member.fingerprint, member.experience });
+    for (store.neural_states.items) |state| try writer.print("L|{d}|{d}|{d}|{d}\n", .{ state.artifact, state.activation_count, @as(i64, @intFromFloat(state.strength * 1_000_000)), state.version });
     for (store.learned_signals.items) |state| {
         const provider = try encode(store.allocator, state.provider);
         defer store.allocator.free(provider);
-        try writer.interface.print("P|{s}|{d}|{d}|{d}\n", .{ provider, @as(i64, @intFromFloat(state.weight * 1_000_000)), @as(i64, @intFromFloat(state.bias * 1_000_000)), state.version });
+        try writer.print("P|{s}|{d}|{d}|{d}\n", .{ provider, @as(i64, @intFromFloat(state.weight * 1_000_000)), @as(i64, @intFromFloat(state.bias * 1_000_000)), state.version });
     }
     for (store.feedback_records.items) |record| {
         const actor = try encode(store.allocator, record.actor);
         defer store.allocator.free(actor);
         const receipt = try encode(store.allocator, record.receipt);
         defer store.allocator.free(receipt);
-        try writer.interface.print("F|{d}|{d}|{s}|{s}|{s}|{s}\n", .{ record.evidence, record.target, @tagName(record.outcome), @tagName(record.failure_class), actor, receipt });
+        try writer.print("F|{d}|{d}|{s}|{s}|{s}|{s}\n", .{ record.evidence, record.target, @tagName(record.outcome), @tagName(record.failure_class), actor, receipt });
     }
-    for (store.attestation_replays.items) |record| try writer.interface.print("V|{x}|{d}\n", .{ record.digest, record.expires_at });
+    for (store.attestation_replays.items) |record| try writer.print("V|{x}|{d}\n", .{ record.digest, record.expires_at });
     for (store.transition_records.items) |record| {
         const reason = try encode(store.allocator, record.reason);
         defer store.allocator.free(reason);
@@ -166,22 +165,39 @@ pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i
         defer store.allocator.free(actor);
         const receipt = try encode(store.allocator, record.receipt);
         defer store.allocator.free(receipt);
-        try writer.interface.print("X|{d}|{d}|{d}|{s}|{s}|{s}|{d}|{d}|{d}|{d}|{d}|{s}|{s}|{s}\n", .{ record.id, record.target, record.cause orelse 0, @tagName(record.kind), @tagName(record.prior_state), @tagName(record.next_state), @as(i64, @intFromFloat(record.prior_confidence * 1_000_000)), @as(i64, @intFromFloat(record.next_confidence * 1_000_000)), @as(i64, @intFromFloat(record.prior_strength * 1_000_000)), @as(i64, @intFromFloat(record.next_strength * 1_000_000)), record.timestamp, reason, actor, receipt });
+        try writer.print("X|{d}|{d}|{d}|{s}|{s}|{s}|{d}|{d}|{d}|{d}|{d}|{s}|{s}|{s}\n", .{ record.id, record.target, record.cause orelse 0, @tagName(record.kind), @tagName(record.prior_state), @tagName(record.next_state), @as(i64, @intFromFloat(record.prior_confidence * 1_000_000)), @as(i64, @intFromFloat(record.next_confidence * 1_000_000)), @as(i64, @intFromFloat(record.prior_strength * 1_000_000)), @as(i64, @intFromFloat(record.next_strength * 1_000_000)), record.timestamp, reason, actor, receipt });
     }
     for (store.information_records.items) |record| {
         const source = try encode(store.allocator, record.source);
         defer store.allocator.free(source);
-        try writer.interface.print("I|{d}|{s}|{s}|{s}|{s}|{d}|{d}|{d}\n", .{ record.node, @tagName(record.kind), @tagName(record.trust), @tagName(record.retention), source, record.observed_at, record.valid_from, record.valid_until orelse -1 });
+        try writer.print("I|{d}|{s}|{s}|{s}|{s}|{d}|{d}|{d}\n", .{ record.node, @tagName(record.kind), @tagName(record.trust), @tagName(record.retention), source, record.observed_at, record.valid_from, record.valid_until orelse -1 });
     }
     for (store.evolution_events.items) |event| {
         const source = try encode(store.allocator, event.source);
         defer store.allocator.free(source);
         const reason = try encode(store.allocator, event.reason);
         defer store.allocator.free(reason);
-        try writer.interface.print("E|{d}|{s}|{d}|{d}|{d}|{s}|{s}\n", .{ event.id, @tagName(event.kind), event.target, event.related orelse 0, event.timestamp, source, reason });
+        try writer.print("E|{d}|{s}|{d}|{d}|{d}|{s}|{s}\n", .{ event.id, @tagName(event.kind), event.target, event.related orelse 0, event.timestamp, source, reason });
     }
-    for (store.decision_dependencies.items) |dependency| try writer.interface.print("D|{d}|{d}|{d}\n", .{ dependency.decision, dependency.information, dependency.timestamp });
-    try writer.interface.flush();
+    for (store.decision_dependencies.items) |dependency| try writer.print("D|{d}|{d}|{d}\n", .{ dependency.decision, dependency.information, dependency.timestamp });
+    try writer.flush();
+}
+
+/// Produces an owned canonical MEML15 snapshot for transports that persist a
+/// single immutable blob instead of a local file.
+pub fn serializeSnapshot(allocator: std.mem.Allocator, store: *const store_mod.Store, revision: u64, next_id: u64, clock: i64) ![]u8 {
+    var output = std.Io.Writer.Allocating.init(allocator);
+    defer output.deinit();
+    try writeSnapshot(store, revision, next_id, clock, &output.writer);
+    return output.toOwnedSlice();
+}
+
+pub fn save(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i64, io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    try writeSnapshot(store, revision, next_id, clock, &writer.interface);
 }
 
 fn saveAtomicLocked(store: *const store_mod.Store, revision: u64, next_id: u64, clock: i64, io: std.Io, allocator: std.mem.Allocator, path: []const u8) !void {
@@ -264,13 +280,12 @@ pub fn recoverJournal(io: std.Io, allocator: std.mem.Allocator, path: []const u8
     try std.Io.Dir.cwd().rename(journal, std.Io.Dir.cwd(), path, io);
 }
 
-/// Loads the single current on-disk format. Every record is strict and the
-/// whole graph is validated before the resulting state is returned.
-pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded {
+/// Parses the single supported snapshot format. Every record is strict and
+/// the whole graph is validated before the resulting state is returned.
+pub fn deserializeSnapshot(allocator: std.mem.Allocator, data: []const u8) !Loaded {
+    if (data.len > 64 * 1024 * 1024) return error.FileTooBig;
     var loaded = Loaded{ .store = store_mod.Store.init(allocator), .revision = 0, .next_id = 1, .clock = 0 };
     errdefer loaded.store.deinit();
-    const data = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024));
-    defer allocator.free(data);
     var lines = std.mem.splitScalar(u8, data, '\n');
     const header = lines.next() orelse return error.BadFile;
     var header_fields = std.mem.splitScalar(u8, header, ' ');
@@ -457,4 +472,11 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded 
     for (loaded.store.nodes.items) |node| maximum_id = @max(maximum_id, node.id);
     if (loaded.next_id <= maximum_id) return error.BadFile;
     return loaded;
+}
+
+/// Loads and validates the canonical snapshot stored at `path`.
+pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Loaded {
+    const data = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024));
+    defer allocator.free(data);
+    return deserializeSnapshot(allocator, data);
 }
