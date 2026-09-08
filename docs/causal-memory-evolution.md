@@ -45,9 +45,9 @@ Agent 可先按 `Context` 检索候选策略、工具偏好或过程，再调用
 
 ## 原子整合与恢复
 
-原子整合会保存完整运行时快照：语义存储、ID 与时钟、派生索引、待处理组、整合游标、signal pipeline 以及自动整合配置。注入失败时恢复完整快照并重建后端索引；成功时才提交该批变更，待处理组可在回滚后重试。
+原子整合会保存完整**语义状态**快照：语义存储、ID 与时钟、派生索引、待处理组和整合游标。注入失败时恢复语义状态并重建后端索引；成功时才提交该批变更，待处理组可在回滚后重试。signal pipeline、verifier、attestation key、plasticity policy 与自动整合开关属于宿主部署/会话配置，不是脚本事务可回滚的记忆事实。
 
-`persist()` 与 `persistAtomic()` 都会在首次写入前创建缺失父目录，再将完整 `MEML15` 状态写入 `<path>.journal`，同步、校验后原子替换目标文件，并写入 `<path>.index.journal`：它保存语义 revision 与有序节点 ID 清单。恢复只接受 revision 和节点集合均匹配的索引 checkpoint；损坏、旧 revision 或不匹配的 checkpoint 会被删除，派生索引仍由语义状态重建。损坏的中断 index journal 不会覆盖已原子提交且匹配的 checkpoint。`recover()` 会检测遗留语义 journal：有效且更新的 journal 被重放，陈旧或无效 journal 被删除。远端 CAS 若提交成功后响应超时，调用方必须读取权威 revision 并恢复快照来消除歧义，不能盲目重试写入。持久化采用非阻塞单写者锁；锁文件保留稳定 inode，并发写入者收到 `WouldBlock`。
+`persist()` 与 `persistAtomic()` 都会在首次写入前创建缺失父目录，再将完整 `MEML15` 状态写入 `<path>.journal`，同步、校验后原子替换目标文件，并写入 `<path>.index.journal`：它保存语义 revision、有序节点 ID 与 tokenizer 版本。恢复只接受 revision、节点集合和 tokenizer 版本均匹配的索引 checkpoint；损坏、旧 revision、旧 tokenizer 或不匹配的 checkpoint 会被删除，派生索引仍由语义状态重建。tokenizer 升级不会拒绝语义快照：宿主可恢复 `MEML15`，调用 `Runtime.reindex()`，再持久化新 checkpoint。损坏的中断 index journal 不会覆盖已原子提交且匹配的 checkpoint。`recover()` 会检测遗留语义 journal：有效且更新的 journal 被重放，陈旧或无效 journal 被删除。远端 CAS 若提交成功后响应超时，调用方必须读取权威 revision 并恢复快照来消除歧义，不能盲目重试写入。持久化采用非阻塞单写者锁；锁文件保留稳定 inode，并发写入者收到 `WouldBlock`。
 
 本地保证范围是使用 MEML API 的文件系统调用。`storage.Remote.Transport` 由宿主实现 revision CAS 与语义快照恢复，`Runtime.recoverFrom()` 会重新校验快照并从语义记录重建派生索引；MEML 不自行发起网络请求，也不传输索引分片。认证、TLS、端点 allowlist、命名空间授权、幂等重试、目录元数据 fsync、生产远程存储一致性以及绕过 API 的锁协作不在当前保证范围内。
 

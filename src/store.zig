@@ -5,6 +5,17 @@ pub const Store = struct {
     allocator: std.mem.Allocator,
     nodes: std.ArrayList(model.Node),
     relations: std.ArrayList(model.Relation),
+    /// Derived lookup state. These maps are never persisted and can always be
+    /// rebuilt from the authoritative node and relation sequences.
+    node_positions: std.AutoHashMap(u64, usize),
+    outgoing_relation_positions: std.AutoHashMap(u64, std.ArrayList(usize)),
+    incoming_relation_positions: std.AutoHashMap(u64, std.ArrayList(usize)),
+    scope_positions: std.AutoHashMap(u64, std.ArrayList(usize)),
+    metric_positions: std.AutoHashMap(u64, std.ArrayList(usize)),
+    artifact_positions: std.AutoHashMap(u64, std.ArrayList(usize)),
+    structure_positions: std.AutoHashMap(u64, std.ArrayList(usize)),
+    feedback_positions: std.AutoHashMap(u64, std.ArrayList(usize)),
+    transition_positions: std.AutoHashMap(u64, std.ArrayList(usize)),
     consolidations: std.ArrayList(model.ConsolidationRecord),
     fingerprint_groups: std.ArrayList(model.FingerprintGroup),
     fingerprint_members: std.ArrayList(model.FingerprintMember),
@@ -22,7 +33,35 @@ pub const Store = struct {
     decision_dependencies: std.ArrayList(model.DecisionDependency),
 
     pub fn init(allocator: std.mem.Allocator) Store {
-        return .{ .allocator = allocator, .nodes = .empty, .relations = .empty, .consolidations = .empty, .fingerprint_groups = .empty, .fingerprint_members = .empty, .neural_states = .empty, .learned_signals = .empty, .feedback_records = .empty, .attestation_replays = .empty, .transition_records = .empty, .scoped_records = .empty, .metric_records = .empty, .artifact_records = .empty, .structure_records = .empty, .information_records = .empty, .evolution_events = .empty, .decision_dependencies = .empty };
+        return .{
+            .allocator = allocator,
+            .nodes = .empty,
+            .relations = .empty,
+            .node_positions = std.AutoHashMap(u64, usize).init(allocator),
+            .outgoing_relation_positions = std.AutoHashMap(u64, std.ArrayList(usize)).init(allocator),
+            .incoming_relation_positions = std.AutoHashMap(u64, std.ArrayList(usize)).init(allocator),
+            .scope_positions = std.AutoHashMap(u64, std.ArrayList(usize)).init(allocator),
+            .metric_positions = std.AutoHashMap(u64, std.ArrayList(usize)).init(allocator),
+            .artifact_positions = std.AutoHashMap(u64, std.ArrayList(usize)).init(allocator),
+            .structure_positions = std.AutoHashMap(u64, std.ArrayList(usize)).init(allocator),
+            .feedback_positions = std.AutoHashMap(u64, std.ArrayList(usize)).init(allocator),
+            .transition_positions = std.AutoHashMap(u64, std.ArrayList(usize)).init(allocator),
+            .consolidations = .empty,
+            .fingerprint_groups = .empty,
+            .fingerprint_members = .empty,
+            .neural_states = .empty,
+            .learned_signals = .empty,
+            .feedback_records = .empty,
+            .attestation_replays = .empty,
+            .transition_records = .empty,
+            .scoped_records = .empty,
+            .metric_records = .empty,
+            .artifact_records = .empty,
+            .structure_records = .empty,
+            .information_records = .empty,
+            .evolution_events = .empty,
+            .decision_dependencies = .empty,
+        };
     }
 
     pub fn deinitNode(allocator: std.mem.Allocator, entry: model.Node) void {
@@ -37,6 +76,15 @@ pub const Store = struct {
         for (self.nodes.items) |entry| deinitNode(self.allocator, entry);
         self.nodes.deinit(self.allocator);
         self.relations.deinit(self.allocator);
+        self.node_positions.deinit();
+        deinitRelationIndex(&self.outgoing_relation_positions, self.allocator);
+        deinitRelationIndex(&self.incoming_relation_positions, self.allocator);
+        deinitRelationIndex(&self.scope_positions, self.allocator);
+        deinitRelationIndex(&self.metric_positions, self.allocator);
+        deinitRelationIndex(&self.artifact_positions, self.allocator);
+        deinitRelationIndex(&self.structure_positions, self.allocator);
+        deinitRelationIndex(&self.feedback_positions, self.allocator);
+        deinitRelationIndex(&self.transition_positions, self.allocator);
         for (self.consolidations.items) |record| self.allocator.free(record.rule);
         self.consolidations.deinit(self.allocator);
         self.fingerprint_groups.deinit(self.allocator);
@@ -128,6 +176,7 @@ pub const Store = struct {
             };
         }
         try out.relations.appendSlice(allocator, self.relations.items);
+        try out.rebuildDerivedIndexes();
         for (self.consolidations.items) |record| {
             const rule = try allocator.dupe(u8, record.rule);
             out.recordConsolidation(.{ .artifact = record.artifact, .rule = rule, .version = record.version, .source_a = record.source_a, .source_b = record.source_b }) catch |err| {
@@ -154,30 +203,113 @@ pub const Store = struct {
 
     pub fn add(self: *Store, entry: model.Node) !u64 {
         try self.nodes.append(self.allocator, entry);
+        self.node_positions.put(entry.id, self.nodes.items.len - 1) catch |err| {
+            _ = self.nodes.pop();
+            return err;
+        };
         return entry.id;
     }
 
+    fn deinitRelationIndex(index: *std.AutoHashMap(u64, std.ArrayList(usize)), allocator: std.mem.Allocator) void {
+        var iterator = index.valueIterator();
+        while (iterator.next()) |positions| positions.deinit(allocator);
+        index.deinit();
+    }
+
+    fn clearRelationIndex(index: *std.AutoHashMap(u64, std.ArrayList(usize)), allocator: std.mem.Allocator) void {
+        var iterator = index.valueIterator();
+        while (iterator.next()) |positions| positions.deinit(allocator);
+        index.clearRetainingCapacity();
+    }
+
+    fn appendRelationPosition(index: *std.AutoHashMap(u64, std.ArrayList(usize)), allocator: std.mem.Allocator, node_id: u64, relation_position: usize) !void {
+        const entry = try index.getOrPut(node_id);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        try entry.value_ptr.append(allocator, relation_position);
+    }
+
+    fn replaceRelationPosition(index: *std.AutoHashMap(u64, std.ArrayList(usize)), node_id: u64, old_position: usize, new_position: usize) void {
+        const positions = index.getPtr(node_id) orelse return;
+        for (positions.items) |*position| {
+            if (position.* == old_position) {
+                position.* = new_position;
+                return;
+            }
+        }
+    }
+
+    fn removeRelationPosition(index: *std.AutoHashMap(u64, std.ArrayList(usize)), node_id: u64, relation_position: usize) void {
+        const positions = index.getPtr(node_id) orelse return;
+        for (positions.items, 0..) |position, offset| {
+            if (position == relation_position) {
+                _ = positions.swapRemove(offset);
+                return;
+            }
+        }
+    }
+
+    /// Rebuilds all non-semantic lookup structures. Recovery and rollback use
+    /// this path so indexes cannot become a second source of truth.
+    pub fn rebuildDerivedIndexes(self: *Store) !void {
+        self.node_positions.clearRetainingCapacity();
+        clearRelationIndex(&self.outgoing_relation_positions, self.allocator);
+        clearRelationIndex(&self.incoming_relation_positions, self.allocator);
+        clearRelationIndex(&self.scope_positions, self.allocator);
+        clearRelationIndex(&self.metric_positions, self.allocator);
+        clearRelationIndex(&self.artifact_positions, self.allocator);
+        clearRelationIndex(&self.structure_positions, self.allocator);
+        clearRelationIndex(&self.feedback_positions, self.allocator);
+        clearRelationIndex(&self.transition_positions, self.allocator);
+        for (self.nodes.items, 0..) |entry, position| try self.node_positions.put(entry.id, position);
+        for (self.relations.items, 0..) |relation, position| {
+            try appendRelationPosition(&self.outgoing_relation_positions, self.allocator, relation.from, position);
+            try appendRelationPosition(&self.incoming_relation_positions, self.allocator, relation.to, position);
+        }
+        for (self.scoped_records.items, 0..) |record, position| try appendRelationPosition(&self.scope_positions, self.allocator, record.node, position);
+        for (self.metric_records.items, 0..) |record, position| try appendRelationPosition(&self.metric_positions, self.allocator, record.node, position);
+        for (self.artifact_records.items, 0..) |record, position| try appendRelationPosition(&self.artifact_positions, self.allocator, record.node, position);
+        for (self.structure_records.items, 0..) |record, position| try appendRelationPosition(&self.structure_positions, self.allocator, record.node, position);
+        for (self.feedback_records.items, 0..) |record, position| try appendRelationPosition(&self.feedback_positions, self.allocator, record.target, position);
+        for (self.transition_records.items, 0..) |record, position| try appendRelationPosition(&self.transition_positions, self.allocator, record.target, position);
+    }
+
     fn removeScopedAt(self: *Store, index: usize) void {
+        const last_position = self.scoped_records.items.len - 1;
+        const moved = self.scoped_records.items[last_position];
         const removed = self.scoped_records.swapRemove(index);
+        removeRelationPosition(&self.scope_positions, removed.node, index);
+        if (index != last_position) replaceRelationPosition(&self.scope_positions, moved.node, last_position, index);
         self.allocator.free(removed.scope.key);
         self.allocator.free(removed.scope.value);
     }
 
     fn removeMetricAt(self: *Store, index: usize) void {
+        const last_position = self.metric_records.items.len - 1;
+        const moved = self.metric_records.items[last_position];
         const removed = self.metric_records.swapRemove(index);
+        removeRelationPosition(&self.metric_positions, removed.node, index);
+        if (index != last_position) replaceRelationPosition(&self.metric_positions, moved.node, last_position, index);
         self.allocator.free(removed.metric.name);
         self.allocator.free(removed.metric.unit);
     }
 
     fn removeArtifactAt(self: *Store, index: usize) void {
+        const last_position = self.artifact_records.items.len - 1;
+        const moved = self.artifact_records.items[last_position];
         const removed = self.artifact_records.swapRemove(index);
+        removeRelationPosition(&self.artifact_positions, removed.node, index);
+        if (index != last_position) replaceRelationPosition(&self.artifact_positions, moved.node, last_position, index);
         self.allocator.free(removed.artifact.kind);
         self.allocator.free(removed.artifact.digest);
         self.allocator.free(removed.artifact.locator);
     }
 
     fn removeStructureAt(self: *Store, index: usize) void {
+        const last_position = self.structure_records.items.len - 1;
+        const moved = self.structure_records.items[last_position];
         const removed = self.structure_records.swapRemove(index);
+        removeRelationPosition(&self.structure_positions, removed.node, index);
+        if (index != last_position) replaceRelationPosition(&self.structure_positions, moved.node, last_position, index);
         self.allocator.free(removed.structure.kind);
         self.allocator.free(removed.structure.fingerprint);
     }
@@ -211,6 +343,12 @@ pub const Store = struct {
         const value = try self.allocator.dupe(u8, scope.value);
         errdefer self.allocator.free(value);
         try self.scoped_records.append(self.allocator, .{ .node = record_id, .scope = .{ .key = key, .value = value } });
+        appendRelationPosition(&self.scope_positions, self.allocator, record_id, self.scoped_records.items.len - 1) catch |err| {
+            const removed = self.scoped_records.pop().?;
+            self.allocator.free(removed.scope.key);
+            self.allocator.free(removed.scope.value);
+            return err;
+        };
     }
 
     pub fn addMetric(self: *Store, record_id: u64, metric: model.Metric) !void {
@@ -219,6 +357,12 @@ pub const Store = struct {
         const unit = try self.allocator.dupe(u8, metric.unit);
         errdefer self.allocator.free(unit);
         try self.metric_records.append(self.allocator, .{ .node = record_id, .metric = .{ .name = name, .value = metric.value, .unit = unit, .uncertainty = metric.uncertainty, .direction = metric.direction } });
+        appendRelationPosition(&self.metric_positions, self.allocator, record_id, self.metric_records.items.len - 1) catch |err| {
+            const removed = self.metric_records.pop().?;
+            self.allocator.free(removed.metric.name);
+            self.allocator.free(removed.metric.unit);
+            return err;
+        };
     }
 
     pub fn addArtifact(self: *Store, record_id: u64, artifact: model.Artifact) !void {
@@ -229,6 +373,13 @@ pub const Store = struct {
         const locator = try self.allocator.dupe(u8, artifact.locator);
         errdefer self.allocator.free(locator);
         try self.artifact_records.append(self.allocator, .{ .node = record_id, .artifact = .{ .kind = kind, .digest = digest, .locator = locator } });
+        appendRelationPosition(&self.artifact_positions, self.allocator, record_id, self.artifact_records.items.len - 1) catch |err| {
+            const removed = self.artifact_records.pop().?;
+            self.allocator.free(removed.artifact.kind);
+            self.allocator.free(removed.artifact.digest);
+            self.allocator.free(removed.artifact.locator);
+            return err;
+        };
     }
 
     pub fn setStructure(self: *Store, record_id: u64, structure: model.Structure) !void {
@@ -238,6 +389,12 @@ pub const Store = struct {
         const fingerprint = try self.allocator.dupe(u8, structure.fingerprint);
         errdefer self.allocator.free(fingerprint);
         try self.structure_records.append(self.allocator, .{ .node = record_id, .structure = .{ .kind = kind, .fingerprint = fingerprint } });
+        appendRelationPosition(&self.structure_positions, self.allocator, record_id, self.structure_records.items.len - 1) catch |err| {
+            const removed = self.structure_records.pop().?;
+            self.allocator.free(removed.structure.kind);
+            self.allocator.free(removed.structure.fingerprint);
+            return err;
+        };
     }
 
     pub fn addRecordData(self: *Store, record_id: u64, input: model.RecordInput) !void {
@@ -259,25 +416,80 @@ pub const Store = struct {
     }
 
     pub fn node(self: *Store, id: u64) ?*model.Node {
-        for (self.nodes.items) |*entry| if (entry.id == id) return entry;
-        return null;
+        const position = self.node_positions.get(id) orelse return null;
+        return &self.nodes.items[position];
     }
 
     pub fn constNode(self: *const Store, id: u64) ?*const model.Node {
-        for (self.nodes.items) |*entry| if (entry.id == id) return entry;
-        return null;
+        const position = self.node_positions.get(id) orelse return null;
+        return &self.nodes.items[position];
     }
 
     pub fn link(self: *Store, relation: model.Relation) !void {
         try self.relations.append(self.allocator, relation);
+        const position = self.relations.items.len - 1;
+        errdefer _ = self.relations.pop();
+        try appendRelationPosition(&self.outgoing_relation_positions, self.allocator, relation.from, position);
+        errdefer removeRelationPosition(&self.outgoing_relation_positions, relation.from, position);
+        try appendRelationPosition(&self.incoming_relation_positions, self.allocator, relation.to, position);
     }
 
     pub fn unlink(self: *Store, from: u64, kind: model.RelationKind, to: u64) bool {
-        for (self.relations.items, 0..) |relation, index| {
+        const positions = self.outgoing_relation_positions.get(from) orelse return false;
+        for (positions.items) |index| {
+            const relation = self.relations.items[index];
             if (relation.from == from and relation.kind == kind and relation.to == to) {
+                const last_position = self.relations.items.len - 1;
+                const moved = self.relations.items[last_position];
                 _ = self.relations.swapRemove(index);
+                removeRelationPosition(&self.outgoing_relation_positions, relation.from, index);
+                removeRelationPosition(&self.incoming_relation_positions, relation.to, index);
+                if (index != last_position) {
+                    replaceRelationPosition(&self.outgoing_relation_positions, moved.from, last_position, index);
+                    replaceRelationPosition(&self.incoming_relation_positions, moved.to, last_position, index);
+                }
                 return true;
             }
+        }
+        return false;
+    }
+
+    pub fn relationPositionsFrom(self: *const Store, id: u64) []const usize {
+        return if (self.outgoing_relation_positions.get(id)) |positions| positions.items else &.{};
+    }
+
+    pub fn relationPositionsTo(self: *const Store, id: u64) []const usize {
+        return if (self.incoming_relation_positions.get(id)) |positions| positions.items else &.{};
+    }
+
+    pub fn scopePositions(self: *const Store, id: u64) []const usize {
+        return if (self.scope_positions.get(id)) |positions| positions.items else &.{};
+    }
+
+    pub fn metricPositions(self: *const Store, id: u64) []const usize {
+        return if (self.metric_positions.get(id)) |positions| positions.items else &.{};
+    }
+
+    pub fn artifactPositions(self: *const Store, id: u64) []const usize {
+        return if (self.artifact_positions.get(id)) |positions| positions.items else &.{};
+    }
+
+    pub fn structurePositions(self: *const Store, id: u64) []const usize {
+        return if (self.structure_positions.get(id)) |positions| positions.items else &.{};
+    }
+
+    pub fn feedbackPositions(self: *const Store, target: u64) []const usize {
+        return if (self.feedback_positions.get(target)) |positions| positions.items else &.{};
+    }
+
+    pub fn transitionPositions(self: *const Store, target: u64) []const usize {
+        return if (self.transition_positions.get(target)) |positions| positions.items else &.{};
+    }
+
+    pub fn hasRelation(self: *const Store, from: u64, to: u64, kind: model.RelationKind) bool {
+        for (self.relationPositionsFrom(from)) |position| {
+            const relation = self.relations.items[position];
+            if (relation.to == to and relation.kind == kind) return true;
         }
         return false;
     }
@@ -307,6 +519,12 @@ pub const Store = struct {
         const receipt = try self.allocator.dupe(u8, input.receipt);
         errdefer self.allocator.free(receipt);
         try self.feedback_records.append(self.allocator, .{ .evidence = input.evidence, .target = input.target, .outcome = input.outcome, .failure_class = input.failure_class, .actor = actor, .receipt = receipt });
+        appendRelationPosition(&self.feedback_positions, self.allocator, input.target, self.feedback_records.items.len - 1) catch |err| {
+            const removed = self.feedback_records.pop().?;
+            self.allocator.free(removed.actor);
+            self.allocator.free(removed.receipt);
+            return err;
+        };
     }
 
     pub fn information(self: *const Store, information_id: u64) ?model.InformationRecord {
@@ -396,6 +614,13 @@ pub const Store = struct {
             .actor = actor,
             .receipt = receipt,
         });
+        appendRelationPosition(&self.transition_positions, self.allocator, input.target, self.transition_records.items.len - 1) catch |err| {
+            const removed = self.transition_records.pop().?;
+            self.allocator.free(removed.reason);
+            self.allocator.free(removed.actor);
+            self.allocator.free(removed.receipt);
+            return err;
+        };
     }
 
     pub fn upsertNeuralState(self: *Store, state: model.NeuralState) !void {

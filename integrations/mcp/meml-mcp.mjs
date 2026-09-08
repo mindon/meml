@@ -7,7 +7,11 @@ import readline from "node:readline";
 const MAX_REQUEST_BYTES = 60 * 1024;
 const binary = process.env.MEML_BIN ?? "meml";
 const statePath = resolve(process.env.MEML_STATE_PATH ?? `${homedir()}/.meml/state/mcp.state`);
-const readOnly = /^(1|true|yes)$/i.test(process.env.MEML_READ_ONLY ?? "");
+// Recall is strictly read-only unless the host explicitly opts into a
+// stateful lifecycle. A tool named `meml_recall` must not silently consolidate
+// or persist memory on process shutdown.
+const automaticLifecycle = /^(1|true|yes)$/i.test(process.env.MEML_AUTO_PERSIST ?? "");
+const readOnly = !automaticLifecycle;
 
 class MemlBridge {
   process;
@@ -114,7 +118,7 @@ class MemlBridge {
 const bridge = new MemlBridge();
 const tools = [{
   name: "meml_recall",
-  description: "Retrieve relevant, explainable MEML long-term memory before planning. The host lifecycle updates memory by default; set MEML_READ_ONLY=true to disable updates.",
+  description: "Retrieve relevant, explainable MEML long-term memory before planning. This tool is read-only by default; a host must explicitly set MEML_AUTO_PERSIST=true to enable lifecycle consolidation and persistence.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

@@ -49,7 +49,7 @@ Runtime ────────> indexed symbolic backend (default)
 ## Verified Capabilities
 
 - Write lightweight experiences with `observe()`, or scopes, metrics, artifacts, and structure with `record(RecordInput)`; activate relevant memory by query, goal, context, structured scope, and fingerprint.
-- Use a shared, versioned ASCII tokenizer for indexes, candidate routing, lexical ranking, and deterministic hash embeddings; rebuild derived indexes from persisted semantic records after recovery.
+- Use a shared, versioned Unicode/CJK tokenizer for indexes, candidate routing, lexical ranking, and deterministic hash embeddings; rebuild derived indexes from persisted semantic records after recovery. A tokenizer change invalidates an old index checkpoint; callers can explicitly run `Runtime.reindex()`.
 - Use indexed, vector, graph, and `hybrid` candidate providers; `backend.LocalSemantic` attaches a host-local ANN source and `backend.Hybrid` creates its deduplicated union with lexical candidates. Providers only return IDs and cannot bypass kernel filtering or ranking.
 - Add metadata, embedding, neural, versioned calibration, and host-local cached embedding retrieval providers with explicit weights and activation traces, without changing the kernel scoring contract.
 - Derive memory, belief, concept, procedure, and deterministic neural artifacts from repeated experience; derivation records carry rules and sources.

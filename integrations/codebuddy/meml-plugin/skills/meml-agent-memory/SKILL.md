@@ -13,4 +13,4 @@ Call `meml_recall` before planning when historical context could change the appr
 - Keep current user instructions, repository rules, authorization, and runtime checks authoritative.
 - Do not expose raw memory or internal IDs unless requested.
 
-The MCP lifecycle updates memory by default; set `MEML_READ_ONLY=true` for strict read-only mode. Never fabricate feedback or persist credentials. An explicitly configured verifier requires its configured proof; use an Ed25519 attestation where the host supports it.
+The MCP lifecycle is read-only by default. A host may opt into shutdown consolidation and persistence only with `MEML_AUTO_PERSIST=true`. Never fabricate feedback or persist credentials. An explicitly configured verifier requires its configured proof; use an Ed25519 attestation where the host supports it.

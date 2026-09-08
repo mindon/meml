@@ -9,6 +9,9 @@ const retrieval = @import("retrieval.zig");
 const ranking = @import("ranking.zig");
 const signals_mod = @import("signals.zig");
 const neural_mod = @import("neural.zig");
+const consolidation_mod = @import("consolidation.zig");
+const dynamics = @import("dynamics.zig");
+const lifecycle = @import("lifecycle.zig");
 
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
@@ -33,34 +36,8 @@ pub const Runtime = struct {
     transition_verifier: ?model.TransitionVerifier = null,
     plasticity_policy: model.PlasticityPolicy = .{},
 
-    pub const ConsolidationReport = struct {
-        scanned_experiences: usize = 0,
-        pending_experiences: usize = 0,
-        skipped: bool = false,
-        memories_created: usize = 0,
-        beliefs_created: usize = 0,
-        concepts_created: usize = 0,
-        procedures_created: usize = 0,
-        neural_artifacts_created: usize = 0,
-    };
-
-    pub const ConsolidationPolicy = struct {
-        repeat_threshold: usize = 2,
-        procedure_success_ratio: f64 = 0.75,
-        auto_consolidate: bool = true,
-        enable_memory: bool = true,
-        enable_belief: bool = true,
-        enable_concept: bool = true,
-        enable_procedure: bool = true,
-        enable_neural: bool = true,
-        abort_after_artifacts: ?usize = null,
-
-        fn key(self: ConsolidationPolicy) u8 {
-            return @as(u8, @intFromBool(self.enable_memory)) | (@as(u8, @intFromBool(self.enable_belief)) << 1) |
-                (@as(u8, @intFromBool(self.enable_concept)) << 2) | (@as(u8, @intFromBool(self.enable_procedure)) << 3) |
-                (@as(u8, @intFromBool(self.enable_neural)) << 4);
-        }
-    };
+    pub const ConsolidationReport = consolidation_mod.Report;
+    pub const ConsolidationPolicy = consolidation_mod.Policy;
 
     pub const Transaction = struct {
         runtime: *Runtime,
@@ -75,12 +52,6 @@ pub const Runtime = struct {
         pending_experiences: usize,
         experience_groups: std.AutoHashMap(u64, usize),
         pending_groups: std.AutoHashMap(u64, void),
-        signal_provider_count: usize,
-        auto_consolidation_enabled: bool,
-        auto_consolidation_policy: ConsolidationPolicy,
-        feedback_verifier: ?model.FeedbackVerifier,
-        transition_verifier: ?model.TransitionVerifier,
-        plasticity_policy: model.PlasticityPolicy,
         committed: bool = false,
 
         pub fn commit(self: *Transaction) void {
@@ -107,12 +78,6 @@ pub const Runtime = struct {
             runtime.pending_groups.deinit();
             runtime.pending_groups = self.pending_groups;
             self.pending_groups = std.AutoHashMap(u64, void).init(runtime.allocator);
-            runtime.signal_pipeline.providers.items.len = self.signal_provider_count;
-            runtime.auto_consolidation_enabled = self.auto_consolidation_enabled;
-            runtime.auto_consolidation_policy = self.auto_consolidation_policy;
-            runtime.feedback_verifier = self.feedback_verifier;
-            runtime.transition_verifier = self.transition_verifier;
-            runtime.plasticity_policy = self.plasticity_policy;
             try runtime.backend.reset(&runtime.store);
         }
 
@@ -128,8 +93,14 @@ pub const Runtime = struct {
         return .{ .allocator = allocator, .store = store_mod.Store.init(allocator), .backend_state = state, .backend = state.provider, .signal_pipeline = signals_mod.Pipeline.init(allocator), .experience_groups = std.AutoHashMap(u64, usize).init(allocator), .pending_groups = std.AutoHashMap(u64, void).init(allocator) };
     }
 
-    /// Begins an in-memory transaction for source-program execution. Direct
-    /// Runtime API calls retain their existing immediate-mutation semantics.
+    /// Begins an in-memory transaction for semantic state changes. Deployment
+    /// policy (verifiers and attestation keys), retrieval configuration, and
+    /// session behavior deliberately remain outside this boundary: they are
+    /// host configuration, not memory facts written by a source program.
+    ///
+    /// Direct Runtime API calls retain their existing immediate-mutation
+    /// semantics. Rollback restores the semantic Store and all counters and
+    /// derived grouping state used to evolve it, then rebuilds the backend.
     pub fn beginTransaction(self: *Runtime) !Transaction {
         var experience_groups = std.AutoHashMap(u64, usize).init(self.allocator);
         errdefer experience_groups.deinit();
@@ -152,12 +123,6 @@ pub const Runtime = struct {
             .pending_experiences = self.pending_experiences,
             .experience_groups = experience_groups,
             .pending_groups = pending_groups,
-            .signal_provider_count = self.signal_pipeline.providers.items.len,
-            .auto_consolidation_enabled = self.auto_consolidation_enabled,
-            .auto_consolidation_policy = self.auto_consolidation_policy,
-            .feedback_verifier = self.feedback_verifier,
-            .transition_verifier = self.transition_verifier,
-            .plasticity_policy = self.plasticity_policy,
         };
     }
 
@@ -322,57 +287,11 @@ pub const Runtime = struct {
     }
 
     fn validateTransitionInput(self: *const Runtime, input: model.TransitionInput) !void {
-        const target = self.store.constNode(input.target) orelse return error.UnknownNode;
-        _ = target;
-        if (input.cause) |cause| if (self.store.constNode(cause) == null) return error.UnknownCause;
-        if (input.reason.len == 0 or input.reason.len > 512 or input.actor.len == 0 or input.actor.len > 128 or input.receipt.len == 0 or input.receipt.len > 512) return error.InvalidTransition;
-        if (!std.math.isFinite(input.amount) or input.amount < 0 or input.amount > 1) return error.InvalidTransition;
-        switch (input.kind) {
-            .set_state => if (input.target_state == null or input.amount != 0) return error.InvalidTransition,
-            .reinforce, .penalize, .stabilize, .decay => if (input.target_state != null or input.amount == 0) return error.InvalidTransition,
-        }
+        return dynamics.validate(&self.store, input);
     }
 
     fn applyTransition(self: *Runtime, input: model.TransitionInput) !u64 {
-        const target = self.store.node(input.target) orelse return error.UnknownNode;
-        const prior_state = target.cognitive_state;
-        const prior_confidence = target.confidence;
-        const prior_strength = target.strength;
-        switch (input.kind) {
-            .set_state => target.cognitive_state = input.target_state.?,
-            .reinforce => {
-                target.confidence = @min(1, target.confidence + input.amount);
-                target.strength = @min(1, target.strength + input.amount);
-            },
-            .penalize, .decay => {
-                target.confidence *= 1 - input.amount;
-                target.strength *= 1 - input.amount;
-            },
-            .stabilize => {
-                target.cognitive_state = .active;
-                target.strength = @min(1, target.strength + input.amount);
-            },
-        }
-        self.clock = @max(self.clock, input.timestamp);
-        const id = self.next_transition_id;
-        self.next_transition_id += 1;
-        try self.store.recordTransition(.{
-            .id = id,
-            .target = input.target,
-            .cause = input.cause,
-            .kind = input.kind,
-            .prior_state = prior_state,
-            .next_state = target.cognitive_state,
-            .prior_confidence = prior_confidence,
-            .next_confidence = target.confidence,
-            .prior_strength = prior_strength,
-            .next_strength = target.strength,
-            .timestamp = input.timestamp,
-            .reason = input.reason,
-            .actor = input.actor,
-            .receipt = input.receipt,
-        });
-        return id;
+        return dynamics.apply(&self.store, &self.clock, &self.next_transition_id, input);
     }
 
     /// Commits one bounded, verified state change. The receipt and actor are
@@ -565,8 +484,9 @@ pub const Runtime = struct {
     fn scopesCompatible(self: *const Runtime, id: u64, requested: []const model.Scope) bool {
         for (requested) |scope| {
             var found = false;
-            for (self.store.scoped_records.items) |scope_record| {
-                if (scope_record.node != id or !std.mem.eql(u8, scope_record.scope.key, scope.key)) continue;
+            for (self.store.scopePositions(id)) |position| {
+                const scope_record = self.store.scoped_records.items[position];
+                if (!std.mem.eql(u8, scope_record.scope.key, scope.key)) continue;
                 if (!std.mem.eql(u8, scope_record.scope.value, scope.value)) return false;
                 found = true;
                 break;
@@ -581,8 +501,8 @@ pub const Runtime = struct {
     /// trained only for a hidden environment.
     fn selectionScopesCompatible(self: *const Runtime, id: u64, requested: []const model.Scope) bool {
         var procedure_scopes: usize = 0;
-        for (self.store.scoped_records.items) |scope_record| {
-            if (scope_record.node != id) continue;
+        for (self.store.scopePositions(id)) |position| {
+            const scope_record = self.store.scoped_records.items[position];
             procedure_scopes += 1;
             var found = false;
             for (requested) |scope| {
@@ -814,8 +734,8 @@ pub const Runtime = struct {
         const compatible = self.scopesCompatible(procedure, context.scopes);
         var successes: usize = 0;
         var failures: usize = 0;
-        for (self.store.feedback_records.items) |feedback| {
-            if (feedback.target != procedure) continue;
+        for (self.store.feedbackPositions(procedure)) |position| {
+            const feedback = self.store.feedback_records.items[position];
             const evidence = self.store.constNode(feedback.evidence) orelse return error.InvalidFeedbackHistory;
             if (cutoff != 0 and evidence.timestamp > cutoff) continue;
             if (feedback.outcome == .success) successes += 1 else failures += 1;
@@ -850,38 +770,44 @@ pub const Runtime = struct {
     pub fn consolidateNeural(self: *Runtime, consolidator: neural_mod.Consolidator) !usize {
         var proposals = try consolidator.propose(&self.store, self.allocator);
         defer proposals.deinit(self.allocator);
+        return self.applyConsolidationProposals(consolidator.name(), proposals.items);
+    }
+
+    /// Validates and commits strategy proposals. Every proposal is still
+    /// subject to Runtime-owned identity, deduplication, lineage, persistence,
+    /// and the caller's surrounding transaction.
+    pub fn applyConsolidationProposals(self: *Runtime, strategy_name: []const u8, proposals: []const consolidation_mod.Proposal) !usize {
+        if (strategy_name.len == 0) return error.InvalidConsolidationStrategy;
         var committed: usize = 0;
-        for (proposals.items) |proposal| {
+        for (proposals) |proposal| {
+            if (proposal.rule.len == 0 or proposal.rule_version == 0 or proposal.source_a == 0 or self.store.constNode(proposal.source_a) == null or (proposal.source_b != 0 and self.store.constNode(proposal.source_b) == null) or !std.math.isFinite(proposal.confidence) or proposal.confidence < 0 or proposal.confidence > 1) return error.InvalidConsolidationProposal;
             var already_committed = false;
             for (self.store.nodes.items) |node| {
-                if (node.kind != .belief or !std.mem.eql(u8, node.result, "neural consolidation")) continue;
-                if (self.hasRelation(node.id, proposal.source_a, .derived_from) and self.hasRelation(node.id, proposal.source_b, .derived_from)) {
+                if (node.kind != proposal.kind or !std.mem.eql(u8, node.result, proposal.result)) continue;
+                if (self.hasRelation(node.id, proposal.source_a, .derived_from) and (proposal.source_b == 0 or self.hasRelation(node.id, proposal.source_b, .derived_from))) {
                     already_committed = true;
                     break;
                 }
             }
             for (self.store.consolidations.items) |consolidation| {
-                if (consolidation.source_a == proposal.source_a and consolidation.source_b == proposal.source_b and std.mem.eql(u8, consolidation.rule, consolidator.name())) {
+                if (consolidation.source_a == proposal.source_a and consolidation.source_b == proposal.source_b and std.mem.eql(u8, consolidation.rule, proposal.rule)) {
                     already_committed = true;
                     break;
                 }
             }
             if (already_committed) continue;
-            const id = try self.make(.belief, proposal.subject, proposal.predicate, proposal.object, proposal.context, proposal.result, proposal.confidence, self.clock);
+            const id = try self.make(proposal.kind, proposal.subject, proposal.predicate, proposal.object, proposal.context, proposal.result, proposal.confidence, self.clock);
             try self.store.link(.{ .from = id, .to = proposal.source_a, .kind = .derived_from, .weight = proposal.confidence });
-            try self.store.link(.{ .from = id, .to = proposal.source_b, .kind = .derived_from, .weight = proposal.confidence });
-            try self.store.recordConsolidation(.{ .artifact = id, .rule = try self.allocator.dupe(u8, consolidator.name()), .version = 1, .source_a = proposal.source_a, .source_b = proposal.source_b });
-            try self.store.upsertNeuralState(.{ .artifact = id, .activation_count = 1, .strength = proposal.confidence, .version = 1 });
+            if (proposal.source_b != 0) try self.store.link(.{ .from = id, .to = proposal.source_b, .kind = .derived_from, .weight = proposal.confidence });
+            try self.store.recordConsolidation(.{ .artifact = id, .rule = try self.allocator.dupe(u8, proposal.rule), .version = proposal.rule_version, .source_a = proposal.source_a, .source_b = proposal.source_b });
+            if (proposal.neural_state) |state| try self.store.upsertNeuralState(.{ .artifact = id, .activation_count = state.activation_count, .strength = state.strength, .version = state.version });
             committed += 1;
         }
         return committed;
     }
 
     fn hasRelation(self: *const Runtime, from: u64, to: u64, kind: model.RelationKind) bool {
-        for (self.store.relations.items) |relation| {
-            if (relation.from == from and relation.to == to and relation.kind == kind) return true;
-        }
-        return false;
+        return self.store.hasRelation(from, to, kind);
     }
 
     fn sameContent(a: model.Node, b: model.Node) bool {
@@ -979,190 +905,47 @@ pub const Runtime = struct {
         return self.consolidateWithPolicyScoped(policy, null);
     }
 
+    fn consolidationHost(self: *Runtime) consolidation_mod.Host {
+        return .{
+            .context = self,
+            .allocator = self.allocator,
+            .store = &self.store,
+            .clock = &self.clock,
+            .makeFn = consolidationMake,
+            .transitionFn = consolidationTransition,
+            .proposalsFn = consolidationProposals,
+            .neuralFn = consolidationNeural,
+        };
+    }
+
+    fn consolidationMake(context: *anyopaque, kind: model.Kind, subject: []const u8, predicate: []const u8, object: []const u8, node_context: []const u8, result: []const u8, confidence: f64, timestamp: i64) !u64 {
+        const self: *Runtime = @ptrCast(@alignCast(context));
+        return self.make(kind, subject, predicate, object, node_context, result, confidence, timestamp);
+    }
+
+    fn consolidationTransition(context: *anyopaque, input: model.TransitionInput) !u64 {
+        const self: *Runtime = @ptrCast(@alignCast(context));
+        return self.applyTransition(input);
+    }
+
+    fn consolidationProposals(context: *anyopaque, proposals: []const consolidation_mod.Proposal) !usize {
+        const self: *Runtime = @ptrCast(@alignCast(context));
+        return self.applyConsolidationProposals("default", proposals);
+    }
+
+    fn consolidationNeural(context: *anyopaque) !usize {
+        const self: *Runtime = @ptrCast(@alignCast(context));
+        return self.consolidateNeural(neural_mod.Deterministic.consolidator());
+    }
+
     fn consolidateWithPolicyScoped(self: *Runtime, policy: ConsolidationPolicy, scope: ?[]const u64) !ConsolidationReport {
-        var report = ConsolidationReport{};
-        var experiences = std.ArrayList(u64).empty;
-        defer experiences.deinit(self.allocator);
-        if (scope) |ids| {
-            for (ids) |id| try experiences.append(self.allocator, id);
-        } else {
-            for (self.store.nodes.items) |node| if (node.kind == .experience) try experiences.append(self.allocator, node.id);
+        const report = try consolidation_mod.runDefault(self.consolidationHost(), policy, scope, self.pending_experiences, self.last_consolidated_experiences, self.last_consolidation_policy);
+        if (!report.skipped) {
+            self.last_consolidated_experiences = report.scanned_experiences;
+            self.last_consolidation_policy = policy.key();
+            self.pending_experiences = 0;
+            self.pending_groups.clearRetainingCapacity();
         }
-        report.scanned_experiences = experiences.items.len;
-        report.pending_experiences = self.pending_experiences;
-        if (scope == null and experiences.items.len == self.last_consolidated_experiences and policy.key() == self.last_consolidation_policy) {
-            report.skipped = true;
-            return report;
-        }
-
-        if (policy.enable_memory) {
-            for (experiences.items) |experience_id| {
-                const experience = self.store.constNode(experience_id).?;
-                var memory_id: ?u64 = null;
-                for (self.store.nodes.items) |node| {
-                    if (node.kind == .memory and sameSemantic(node, experience.*) and self.hasRelation(node.id, experience_id, .derived_from)) {
-                        memory_id = node.id;
-                        break;
-                    }
-                }
-                if (memory_id == null) {
-                    const created = try self.make(.memory, experience.subject, experience.predicate, experience.object, experience.context, experience.result, 0.6, self.clock);
-                    try self.store.link(.{ .from = created, .to = experience_id, .kind = .derived_from, .weight = 1 });
-                    try self.recordRule(created, "experience-to-memory", experience_id, 0);
-                    memory_id = created;
-                    report.memories_created += 1;
-                }
-            }
-        }
-        try maybeAbort(policy, report);
-
-        const RepeatGroup = struct {
-            representative: u64,
-            last: u64,
-            repetitions: usize,
-            contradictions: usize = 0,
-        };
-        var repeat_groups = std.ArrayList(RepeatGroup).empty;
-        defer repeat_groups.deinit(self.allocator);
-        var repeat_group_index = std.AutoHashMap(u64, usize).init(self.allocator);
-        defer repeat_group_index.deinit();
-        var experience_group_index = std.AutoHashMap(u64, usize).init(self.allocator);
-        defer experience_group_index.deinit();
-        for (experiences.items) |experience_id| {
-            const experience = self.store.constNode(experience_id).?;
-            // Consolidation intentionally groups append-only observations by their
-            // semantic payload, regardless of attached metadata.
-            const key = fingerprint(experience.subject, experience.predicate, experience.object, experience.context, experience.result);
-            const entry = try repeat_group_index.getOrPut(key);
-            if (entry.found_existing) {
-                const group = &repeat_groups.items[entry.value_ptr.*];
-                group.last = experience_id;
-                group.repetitions += 1;
-            } else {
-                entry.value_ptr.* = repeat_groups.items.len;
-                try repeat_groups.append(self.allocator, .{ .representative = experience_id, .last = experience_id, .repetitions = 1 });
-            }
-            try experience_group_index.put(experience_id, entry.value_ptr.*);
-        }
-        for (self.store.relations.items) |relation| {
-            if (relation.kind != .contradicts) continue;
-            if (experience_group_index.get(relation.to)) |group_index| repeat_groups.items[group_index].contradictions += 1;
-        }
-
-        if (policy.enable_belief) {
-            for (repeat_groups.items, 0..) |group, group_index| {
-                if (group.repetitions < policy.repeat_threshold) continue;
-                const left = self.store.constNode(group.representative).?;
-                var belief_id: ?u64 = null;
-                for (self.store.nodes.items) |node| if (node.kind == .belief and std.mem.eql(u8, node.result, "consolidated repetition") and sameSemantic(node, left.*)) {
-                    belief_id = node.id;
-                    break;
-                };
-                if (belief_id == null) {
-                    belief_id = try self.make(.belief, left.subject, left.predicate, left.object, left.context, "consolidated repetition", @min(1, 0.5 + @as(f64, @floatFromInt(group.repetitions)) * 0.1), self.clock);
-                    if (self.store.node(belief_id.?)) |belief| {
-                        belief.support_count = @intCast(group.repetitions);
-                        belief.last_confirmed_at = self.clock;
-                    }
-                    try self.recordRule(belief_id.?, "repeated-experience-to-belief", group.representative, group.last);
-                    report.beliefs_created += 1;
-                } else if (self.store.node(belief_id.?)) |belief| {
-                    belief.support_count += @intCast(group.repetitions);
-                    belief.last_confirmed_at = self.clock;
-                    _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .reinforce, .amount = @min(0.25, 0.05 * @as(f64, @floatFromInt(group.repetitions))), .reason = "kernel repeated experience", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                    if (belief.cognitive_state == .contested and belief.contradiction_count == 0) _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .stabilize, .amount = 0.01, .reason = "kernel contradiction resolved", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                }
-                if (group.contradictions > 0) {
-                    var relation_index: usize = 0;
-                    while (relation_index < self.store.relations.items.len) : (relation_index += 1) {
-                        const relation = self.store.relations.items[relation_index];
-                        if (relation.kind != .contradicts) continue;
-                        const source_group_index = experience_group_index.get(relation.to) orelse continue;
-                        if (source_group_index != group_index) continue;
-                        try self.contradict(relation.from, belief_id.?);
-                    }
-                    _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .set_state, .target_state = .contested, .reason = "kernel inherited contradictory evidence", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                    _ = try self.applyTransition(.{ .target = belief_id.?, .kind = .penalize, .amount = @min(0.8, 0.2 * @as(f64, @floatFromInt(group.contradictions))), .reason = "kernel inherited contradictory evidence", .actor = "kernel", .receipt = "consolidation", .timestamp = self.clock });
-                }
-                // `make` may reallocate self.store.nodes; resolve the representative
-                // again before reading it for the memory links.
-                const left_now = self.store.constNode(group.representative).?;
-                for (self.store.nodes.items) |node| if (node.kind == .memory and sameSemantic(node, left_now.*) and !self.hasRelation(belief_id.?, node.id, .derived_from)) {
-                    try self.store.link(.{ .from = belief_id.?, .to = node.id, .kind = .derived_from, .weight = 1 });
-                };
-            }
-        }
-        try maybeAbort(policy, report);
-
-        // Keep value copies rather than pointers into `store.nodes`: later stages
-        // may append artifacts and reallocate the backing array.
-        var beliefs = std.ArrayList(model.Node).empty;
-        defer beliefs.deinit(self.allocator);
-        for (self.store.nodes.items) |node| if (node.kind == .belief and std.mem.eql(u8, node.result, "consolidated repetition")) try beliefs.append(self.allocator, node);
-        // Different values alone are not proof of a contradiction. Consolidation
-        // carries only explicit contradictory evidence into derived beliefs, which
-        // prevents quadratic all-pairs conflict expansion for ordinary alternatives.
-        if (policy.enable_concept and beliefs.items.len >= 2) {
-            const first = beliefs.items[0];
-            const label = try std.fmt.allocPrint(self.allocator, "generalized {s}", .{first.predicate});
-            defer self.allocator.free(label);
-            var concept_id: ?u64 = null;
-            for (self.store.nodes.items) |node| {
-                if (node.kind == .concept and std.mem.eql(u8, node.object, label)) concept_id = node.id;
-            }
-            if (concept_id == null) {
-                concept_id = try self.make(.concept, first.subject, "generalizes", label, first.context, "automatic generalization", 0.7, self.clock);
-                try self.recordRule(concept_id.?, "beliefs-to-concept", beliefs.items[0].id, beliefs.items[1].id);
-                report.concepts_created = 1;
-            }
-            for (beliefs.items) |belief| if (!self.hasRelation(concept_id.?, belief.id, .generalizes)) try self.store.link(.{ .from = concept_id.?, .to = belief.id, .kind = .generalizes, .weight = 1 });
-        }
-        try maybeAbort(policy, report);
-
-        var procedure_experiences = std.ArrayList(model.Node).empty;
-        defer procedure_experiences.deinit(self.allocator);
-        if (policy.enable_procedure) for (self.store.nodes.items) |node| {
-            if (node.kind == .experience) try procedure_experiences.append(self.allocator, node);
-        };
-        if (policy.enable_procedure and procedure_experiences.items.len >= 2) {
-            var order_index: usize = 1;
-            while (order_index < procedure_experiences.items.len) : (order_index += 1) {
-                var position = order_index;
-                while (position > 0 and procedure_experiences.items[position - 1].timestamp > procedure_experiences.items[position].timestamp) {
-                    const temp = procedure_experiences.items[position - 1];
-                    procedure_experiences.items[position - 1] = procedure_experiences.items[position];
-                    procedure_experiences.items[position] = temp;
-                    position -= 1;
-                }
-            }
-            const first = procedure_experiences.items[0];
-            const name = try std.fmt.allocPrint(self.allocator, "learned {s} sequence", .{first.predicate});
-            defer self.allocator.free(name);
-            var procedure_id: ?u64 = null;
-            for (self.store.nodes.items) |node| {
-                if (node.kind == .procedure and std.mem.eql(u8, node.object, name)) procedure_id = node.id;
-            }
-            var success_count: usize = 0;
-            for (procedure_experiences.items) |experience| {
-                if (std.mem.eql(u8, experience.result, "success")) success_count += 1;
-            }
-            const success_ratio = @as(f64, @floatFromInt(success_count)) / @as(f64, @floatFromInt(procedure_experiences.items.len));
-            if (success_ratio >= policy.procedure_success_ratio) {
-                if (procedure_id == null) {
-                    procedure_id = try self.make(.procedure, first.subject, "performs", name, first.context, "automatic sequence", 0.7, self.clock);
-                    try self.recordRule(procedure_id.?, "ordered-successful-experiences-to-procedure", procedure_experiences.items[0].id, procedure_experiences.items[procedure_experiences.items.len - 1].id);
-                    report.procedures_created = 1;
-                }
-                for (procedure_experiences.items, 0..) |experience, index| if (!self.hasRelation(procedure_id.?, experience.id, .follows)) try self.store.link(.{ .from = procedure_id.?, .to = experience.id, .kind = .follows, .weight = 1 / @as(f64, @floatFromInt(index + 1)) });
-            }
-        }
-        try maybeAbort(policy, report);
-        if (policy.enable_neural) report.neural_artifacts_created = try self.consolidateNeural(neural_mod.Deterministic.consolidator());
-        try maybeAbort(policy, report);
-        self.last_consolidated_experiences = experiences.items.len;
-        self.last_consolidation_policy = policy.key();
-        self.pending_experiences = 0;
-        self.pending_groups.clearRetainingCapacity();
         return report;
     }
 
@@ -1206,6 +989,15 @@ pub const Runtime = struct {
         self.backend = self.backend_state.provider;
         try self.backend.reset(&self.store);
     }
+
+    /// Explicitly rebuilds all derived local state after a tokenizer, backend,
+    /// or host provider upgrade. Semantic records and their revision remain
+    /// untouched; callers persist afterward when they want a fresh checkpoint.
+    pub fn reindex(self: *Runtime) !void {
+        try self.store.rebuildDerivedIndexes();
+        try self.backend.reset(&self.store);
+        self.index_checkpoint_revision = 0;
+    }
     /// Installs a host-owned candidate provider. The provider and its context
     /// must outlive this Runtime or a later `use*Backend` call. The provider
     /// may recall IDs only; kernel filtering and final scoring remain enforced.
@@ -1222,40 +1014,33 @@ pub const Runtime = struct {
     /// Persists semantic state through a caller-supplied provider. Provider
     /// indexes remain derived and must be rebuilt from the recovered records.
     pub fn persistTo(self: *Runtime, provider: storage_mod.Provider, io: std.Io, path: []const u8) !void {
-        const next_revision = std.math.add(u64, self.revision, 1) catch return error.RevisionOverflow;
-        try provider.persist(&self.store, next_revision, self.next_id, self.clock, io, self.allocator, path);
-        self.revision = next_revision;
+        return lifecycle.persistTo(&self.store, &self.revision, self.next_id, self.clock, provider, io, self.allocator, path);
     }
 
     pub fn persistAtomic(self: *Runtime, io: std.Io, path: []const u8) !void {
-        const next_revision = std.math.add(u64, self.revision, 1) catch return error.RevisionOverflow;
-        try persistence.saveAtomic(&self.store, next_revision, self.next_id, self.clock, io, self.allocator, path);
-        self.revision = next_revision;
-        try index_journal.save(&self.store, next_revision, io, self.allocator, path);
-        self.index_checkpoint_revision = next_revision;
+        return lifecycle.persistAtomic(&self.store, &self.revision, &self.index_checkpoint_revision, self.next_id, self.clock, io, self.allocator, path);
     }
 
     /// Commits through an optimistic CAS provider. A stale caller receives
     /// `error.RevisionConflict` and retains its in-memory revision unchanged.
     pub fn persistIfRevision(self: *Runtime, provider: storage_mod.VersionedProvider, expected_revision: u64, io: std.Io, path: []const u8) !void {
-        const revision = try provider.persistIfRevision(&self.store, self.next_id, self.clock, expected_revision, io, self.allocator, path);
-        self.revision = revision;
+        return lifecycle.persistIfRevision(&self.store, &self.revision, self.next_id, self.clock, provider, expected_revision, io, self.allocator, path);
     }
-    fn recoverLoaded(allocator: std.mem.Allocator, loaded: persistence.Loaded, index_checkpoint_revision: u64) !Runtime {
-        var owned = loaded;
+
+    fn recoverLoaded(allocator: std.mem.Allocator, recovered: lifecycle.Recovered) !Runtime {
+        var owned = recovered;
         var transferred = false;
         errdefer if (!transferred) owned.store.deinit();
-        try owned.store.validate();
         var runtime = Runtime.init(allocator);
         errdefer runtime.deinit();
         runtime.store.deinit();
         runtime.store = owned.store;
         transferred = true;
         runtime.next_id = owned.next_id;
-        for (runtime.store.transition_records.items) |transition_record| runtime.next_transition_id = @max(runtime.next_transition_id, transition_record.id + 1);
+        runtime.next_transition_id = owned.next_transition_id;
         runtime.clock = owned.clock;
         runtime.revision = owned.revision;
-        runtime.index_checkpoint_revision = index_checkpoint_revision;
+        runtime.index_checkpoint_revision = owned.index_checkpoint_revision;
         if (runtime.store.fingerprint_groups.items.len > 0) {
             for (runtime.store.fingerprint_groups.items) |group| try runtime.experience_groups.put(group.fingerprint, group.count);
         } else {
@@ -1268,22 +1053,18 @@ pub const Runtime = struct {
                 try runtime.store.recordFingerprint(key, node.id);
             }
         }
-        try runtime.backend.reset(&runtime.store);
+        try lifecycle.restoreBackend(runtime.backend, &runtime.store);
         return runtime;
     }
 
     pub fn recover(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Runtime {
-        try persistence.recoverJournal(io, allocator, path);
-        var loaded = try persistence.load(allocator, io, path);
-        const checkpoint_revision = if (try index_journal.recover(&loaded.store, loaded.revision, io, allocator, path)) loaded.revision else 0;
-        return recoverLoaded(allocator, loaded, checkpoint_revision);
+        return recoverLoaded(allocator, try lifecycle.recoverLocal(allocator, io, path));
     }
 
     /// Recovers a semantic snapshot supplied by a host-owned CAS provider.
     /// Remote providers never transfer derived indexes; rebuilding them avoids
     /// cross-revision shard inconsistency after a successful CAS commit.
     pub fn recoverFrom(allocator: std.mem.Allocator, provider: storage_mod.VersionedProvider, io: std.Io, path: []const u8) !Runtime {
-        const loaded = try provider.recover(allocator, io, path);
-        return recoverLoaded(allocator, loaded, 0);
+        return recoverLoaded(allocator, try lifecycle.recoverFrom(allocator, provider, io, path));
     }
 };

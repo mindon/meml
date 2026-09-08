@@ -443,6 +443,15 @@ pub const Weights = struct {
     external: f64 = 0.18,
 };
 
+/// Versioned, named ranking configuration. The score remains a ranking utility
+/// rather than a probability; callers can audit which weight profile produced
+/// a result without treating different profiles as a shared confidence scale.
+pub const ScoringProfile = struct {
+    id: []const u8 = "kernel-default",
+    version: u32 = 1,
+    weights: Weights = .{},
+};
+
 pub const Context = struct {
     query: []const u8 = "",
     goal: []const u8 = "",
@@ -456,7 +465,7 @@ pub const Context = struct {
     minimum_stability: f64 = 0,
     propagation: PropagationBudget = .{},
     resolve_conflicts: bool = true,
-    weights: Weights = .{},
+    scoring: ScoringProfile = .{},
 };
 
 pub const Signals = struct {
@@ -499,5 +508,7 @@ pub const Activation = struct {
     id: u64,
     score: f64,
     signals: Signals,
+    scoring_profile_id: []const u8 = "kernel-default",
+    scoring_profile_version: u32 = 1,
     provider_trace: ProviderTrace = .{},
 };

@@ -1784,3 +1784,106 @@ test "MEML15 loader rejects old state headers without compatibility" {
     try writer.interface.flush();
     try std.testing.expectError(error.UnsupportedVersion, meml.persistence.load(std.testing.allocator, std.testing.io, path));
 }
+
+test "derived store indexes preserve relation semantics after unlink and recovery" {
+    const path = testPath("test-derived-indexes.state");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-derived-indexes.state.journal")) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-derived-indexes.state.index")) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, testPath("test-derived-indexes.state.index.journal")) catch {};
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const source = try runtime.assert("agent", "uses", "index-source", "current", 0.8);
+    const target = try runtime.assert("agent", "uses", "index-target", "current", 0.8);
+    const spare = try runtime.assert("agent", "uses", "index-spare", "current", 0.8);
+    try runtime.link(source, .supports, target, 0.9);
+    try runtime.link(spare, .causes, source, 0.7);
+    try std.testing.expect(runtime.store.hasRelation(source, target, .supports));
+    try std.testing.expectEqual(@as(usize, 1), runtime.store.relationPositionsFrom(source).len);
+    try std.testing.expectEqual(@as(usize, 1), runtime.store.relationPositionsTo(target).len);
+    try runtime.unlink(source, .supports, target);
+    try std.testing.expect(!runtime.store.hasRelation(source, target, .supports));
+    try std.testing.expect(runtime.store.hasRelation(spare, source, .causes));
+    try runtime.persist(std.testing.io, path);
+    var recovered = try meml.Runtime.recover(std.testing.allocator, std.testing.io, path);
+    defer recovered.deinit();
+    try std.testing.expect(recovered.store.hasRelation(spare, source, .causes));
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.relationPositionsFrom(spare).len);
+    try std.testing.expectEqual(@as(usize, 1), recovered.store.relationPositionsTo(source).len);
+}
+
+test "consolidation proposals remain kernel validated and atomic" {
+    const Proposer = struct {
+        fn name(_: *anyopaque) []const u8 {
+            return "test-proposer";
+        }
+        fn propose(_: *anyopaque, store: *const meml.Store, allocator: std.mem.Allocator) !std.ArrayList(meml.consolidation.Proposal) {
+            var proposals = std.ArrayList(meml.consolidation.Proposal).empty;
+            const source = store.nodes.items[0];
+            try proposals.append(allocator, .{
+                .kind = .belief,
+                .subject = source.subject,
+                .predicate = "derived",
+                .object = source.object,
+                .context = source.context,
+                .result = "proposal",
+                .confidence = 0.7,
+                .source_a = source.id,
+                .rule = "test-rule",
+            });
+            return proposals;
+        }
+    };
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const source = try runtime.assert("agent", "uses", "proposal-source", "current", 0.8);
+    var strategy = meml.consolidation.Strategy{ .context = undefined, .nameFn = Proposer.name, .proposeFn = Proposer.propose };
+    var proposals = try strategy.propose(&runtime.store, std.testing.allocator);
+    defer proposals.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), try runtime.applyConsolidationProposals(strategy.name(), proposals.items));
+    try std.testing.expectEqual(@as(usize, 2), runtime.store.nodes.items.len);
+    try std.testing.expect(runtime.store.hasRelation(2, source, .derived_from));
+    try std.testing.expectEqual(@as(usize, 0), try runtime.applyConsolidationProposals(strategy.name(), proposals.items));
+    const invalid = [_]meml.consolidation.Proposal{.{ .subject = "bad", .predicate = "bad", .object = "bad", .context = "", .result = "bad", .confidence = 0.5, .source_a = 999, .rule = "bad" }};
+    try std.testing.expectError(error.InvalidConsolidationProposal, runtime.applyConsolidationProposals(strategy.name(), &invalid));
+    try std.testing.expectEqual(@as(usize, 2), runtime.store.nodes.items.len);
+}
+
+test "activation carries the requested scoring profile without changing default ranking" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const expected = try runtime.assert("agent", "uses", "profile-target", "current", 0.8);
+    var default_result = try runtime.activate(.{ .query = "profile-target" }, 1, std.testing.allocator);
+    defer default_result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(expected, default_result.items[0].id);
+    try std.testing.expectEqualStrings("kernel-default", default_result.items[0].scoring_profile_id);
+    try std.testing.expectEqual(@as(u32, 1), default_result.items[0].scoring_profile_version);
+
+    var profiled = try runtime.activate(.{
+        .query = "profile-target",
+        .scoring = .{
+            .id = "profile-test",
+            .version = 7,
+            .weights = .{ .semantic = 1, .lexical = 0, .temporal = 0, .causal = 0, .procedural = 0, .preference = 0, .goal = 0, .confidence = 0, .scope = 0, .metric = 0, .structure = 0, .lineage = 0, .stability = 0, .contradiction = 0, .external = 0 },
+        },
+    }, 1, std.testing.allocator);
+    defer profiled.deinit(std.testing.allocator);
+    try std.testing.expectEqual(expected, profiled.items[0].id);
+    try std.testing.expectEqualStrings("profile-test", profiled.items[0].scoring_profile_id);
+    try std.testing.expectEqual(@as(u32, 7), profiled.items[0].scoring_profile_version);
+}
+
+test "Unicode CJK tokenizer routes candidates and reindex preserves semantic state" {
+    var runtime = meml.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    const expected = try runtime.observe("用户", "偏好", "中文检索", "当前", "success", 1);
+    var before = try runtime.activate(.{ .query = "检索", .situation = "当前" }, 1, std.testing.allocator);
+    defer before.deinit(std.testing.allocator);
+    try std.testing.expectEqual(expected, before.items[0].id);
+    const revision = runtime.revision;
+    try runtime.reindex();
+    try std.testing.expectEqual(revision, runtime.revision);
+    var after = try runtime.activate(.{ .query = "检索", .situation = "当前" }, 1, std.testing.allocator);
+    defer after.deinit(std.testing.allocator);
+    try std.testing.expectEqual(expected, after.items[0].id);
+}

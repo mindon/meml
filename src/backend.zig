@@ -156,19 +156,22 @@ const Indexes = struct {
         try self.addText(node.object, node.id);
         try self.addText(node.context, node.id);
         try self.addText(node.result, node.id);
-        for (store.scoped_records.items) |record| if (record.node == node.id) {
+        for (store.scopePositions(node.id)) |position| {
+            const record = store.scoped_records.items[position];
             try self.addToken(record.scope.key, node.id);
             try self.addToken(record.scope.value, node.id);
-        };
-        for (store.metric_records.items) |record| if (record.node == node.id) try self.addToken(record.metric.name, node.id);
-        for (store.artifact_records.items) |record| if (record.node == node.id) {
+        }
+        for (store.metricPositions(node.id)) |position| try self.addToken(store.metric_records.items[position].metric.name, node.id);
+        for (store.artifactPositions(node.id)) |position| {
+            const record = store.artifact_records.items[position];
             try self.addToken(record.artifact.kind, node.id);
             try self.addToken(record.artifact.digest, node.id);
-        };
-        for (store.structure_records.items) |record| if (record.node == node.id) {
+        }
+        for (store.structurePositions(node.id)) |position| {
+            const record = store.structure_records.items[position];
             try self.addToken(record.structure.kind, node.id);
             try self.addToken(record.structure.fingerprint, node.id);
-        };
+        }
         self.vectors.put(node.id, vector(node, "")) catch return error.OutOfMemory;
     }
     fn reset(self: *Indexes, store: *const store_mod.Store) !void {

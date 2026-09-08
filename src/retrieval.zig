@@ -63,11 +63,24 @@ fn propagate(store: *const store_mod.Store, seeds: []const u64, context: model.C
         var next = std.ArrayList(u64).empty;
         defer next.deinit(allocator);
         for (frontier.items) |current| {
-            for (store.relations.items) |relation| {
+            for (store.relationPositionsFrom(current)) |position| {
                 if (stats.edges_examined >= context.propagation.edge_limit or ids.items.len >= context.propagation.candidate_limit) break;
-                if (relation.from != current and relation.to != current) continue;
+                const relation = store.relations.items[position];
                 stats.edges_examined += 1;
-                const other = if (relation.from == current) relation.to else relation.from;
+                const other = relation.to;
+                const node = store.constNode(other) orelse continue;
+                if (!activationAllowed(node, context.activation_policy)) continue;
+                if (!(try seen.getOrPut(other)).found_existing) {
+                    try ids.append(allocator, other);
+                    try next.append(allocator, other);
+                    stats.propagated += 1;
+                }
+            }
+            for (store.relationPositionsTo(current)) |position| {
+                if (stats.edges_examined >= context.propagation.edge_limit or ids.items.len >= context.propagation.candidate_limit) break;
+                const relation = store.relations.items[position];
+                stats.edges_examined += 1;
+                const other = relation.from;
                 const node = store.constNode(other) orelse continue;
                 if (!activationAllowed(node, context.activation_policy)) continue;
                 if (!(try seen.getOrPut(other)).found_existing) {
@@ -105,7 +118,14 @@ pub fn runWithPipeline(store: *const store_mod.Store, backend: backend_mod.Backe
             scored_signals.external = pipeline_score.value;
             provider_trace = pipeline_score.trace;
         }
-        try output.append(allocator, .{ .id = id, .score = scored_signals.total(context.weights), .signals = scored_signals, .provider_trace = provider_trace });
+        try output.append(allocator, .{
+            .id = id,
+            .score = scored_signals.total(context.scoring.weights),
+            .signals = scored_signals,
+            .scoring_profile_id = context.scoring.id,
+            .scoring_profile_version = context.scoring.version,
+            .provider_trace = provider_trace,
+        });
     }
     const scored = output.items.len;
     std.sort.heap(model.Activation, output.items, {}, ranking.sortActivations);

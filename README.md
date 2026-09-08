@@ -50,7 +50,7 @@ Runtime ────────> indexed symbolic backend (default)
 ## 已验证能力
 
 - 使用 `observe()` 写入轻量经验，或以 `record(RecordInput)` 写入范围、指标、制品和结构；按查询、目标、情境、结构化范围与指纹激活相关记忆。
-- 使用共享、版本化的 ASCII tokenizer 进行索引、候选路由、词法排序和确定性 hash embedding；恢复后从持久化语义记录重建派生索引。
+- 使用共享、版本化的 Unicode/CJK tokenizer 进行索引、候选路由、词法排序和确定性 hash embedding；恢复后从持久化语义记录重建派生索引。tokenizer 变更会使旧 index checkpoint 失效，调用方可使用 `Runtime.reindex()` 显式重建。
 - 使用索引、向量、图和 `hybrid` 候选 provider；`backend.LocalSemantic` 可接入宿主本地 ANN，并通过 `backend.Hybrid` 与 lexical 候选去重并集。provider 仅返回 ID，不能绕过内核过滤与排序。
 - 添加元数据、嵌入、神经、版本化校准及宿主本地缓存 embedding 检索信号 provider；外部 provider 有显式权重并在 activation trace 中解释，而不改变内核评分合约。
 - 从重复经验派生 memory、belief、concept、procedure 和确定性 neural artifact；推导记录携带规则与来源。

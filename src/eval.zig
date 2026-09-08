@@ -208,6 +208,7 @@ pub fn main() !void {
     try loadSeed(io, &runtime, allocator, &keys);
     const report = try evaluateAnnotations(io, &runtime, allocator, &keys, baseline.limit);
     const passed = report.tasks >= baseline.min_tasks and report.recall() >= baseline.min_recall_at_k and report.mrr() >= baseline.min_mrr and report.meanNdcg() >= baseline.min_ndcg;
-    std.debug.print("{{\"schema_version\":1,\"dataset_id\":\"{s}\",\"limit\":{d},\"tasks\":{d},\"recall_at_k\":{d:.6},\"mrr\":{d:.6},\"ndcg\":{d:.6},\"passed\":{s}}}\n", .{ baseline.dataset_id, baseline.limit, report.tasks, report.recall(), report.mrr(), report.meanNdcg(), if (passed) "true" else "false" });
+    const profile = meml.ScoringProfile{};
+    std.debug.print("{{\"schema_version\":1,\"dataset_id\":\"{s}\",\"scoring_profile\":{{\"id\":\"{s}\",\"version\":{d}}},\"limit\":{d},\"tasks\":{d},\"recall_at_k\":{d:.6},\"mrr\":{d:.6},\"ndcg\":{d:.6},\"passed\":{s}}}\n", .{ baseline.dataset_id, profile.id, profile.version, baseline.limit, report.tasks, report.recall(), report.mrr(), report.meanNdcg(), if (passed) "true" else "false" });
     if (!passed) return error.QualityGateFailed;
 }

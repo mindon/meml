@@ -385,7 +385,7 @@ meml.neural.retrievalProvider()
 - `backend`：`vector | graph | hybrid`
 - `providers`（数组）：`metadata | embedding | reranker | calibrated | neural`，每项可写为字符串或 `{ "name":"embedding", "weight":2 }`
 
-`activate` 响应会额外返回 `provider_trace`，按 provider 列出未加权 `score` 与配置 `weight`。文本匹配由 `tokenizer-ascii-v1` 统一处理：ASCII 大小写归一、按兼容分隔符分词；该版本刻意不隐式做中文/CJK 分词。
+`activate` 响应会额外返回 `provider_trace`，并附带 `scoring_profile`（`id`、`version`），用于审计产生该排名的配置。文本匹配由 `meml-tokenizer-unicode-cjk-v2` 统一处理：ASCII 大小写归一、按兼容分隔符分词，并将 CJK 字符作为稳定 token。tokenizer 版本变更会使旧 `.index` checkpoint 无效；语义 `MEML15` 快照仍可恢复，随后调用 `Runtime.reindex()` 显式重建派生索引并在下一次 `persist()` 写入新 checkpoint。
 
 ### 3.3 多源记忆导入与默认存储
 

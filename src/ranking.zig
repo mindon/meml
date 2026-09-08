@@ -40,8 +40,9 @@ fn scopeScore(store: *const store_mod.Store, id: u64, requested: []const model.S
     var matches: usize = 0;
     for (requested) |scope| {
         var found = false;
-        for (store.scoped_records.items) |record| {
-            if (record.node == id and std.mem.eql(u8, record.scope.key, scope.key)) {
+        for (store.scopePositions(id)) |position| {
+            const record = store.scoped_records.items[position];
+            if (std.mem.eql(u8, record.scope.key, scope.key)) {
                 if (!std.mem.eql(u8, record.scope.value, scope.value)) return 0;
                 found = true;
                 break;
@@ -55,24 +56,28 @@ fn scopeScore(store: *const store_mod.Store, id: u64, requested: []const model.S
 fn metricQuality(store: *const store_mod.Store, id: u64) f64 {
     var count: usize = 0;
     var uncertainty_penalty: f64 = 0;
-    for (store.metric_records.items) |record| if (record.node == id) {
+    for (store.metricPositions(id)) |position| {
+        const record = store.metric_records.items[position];
         count += 1;
         if (record.metric.uncertainty) |uncertainty| uncertainty_penalty += @min(0.5, uncertainty / (@abs(record.metric.value) + 0.000001));
-    };
+    }
     if (count == 0) return 0;
     return @max(0, @min(1, 0.5 + @min(0.4, @as(f64, @floatFromInt(count)) * 0.1) - uncertainty_penalty / @as(f64, @floatFromInt(count))));
 }
 
 fn structureScore(store: *const store_mod.Store, id: u64, requested: ?model.Structure) f64 {
     const expected = requested orelse return 0;
-    for (store.structure_records.items) |record| if (record.node == id and std.mem.eql(u8, record.structure.kind, expected.kind) and std.mem.eql(u8, record.structure.fingerprint, expected.fingerprint)) return 1;
+    for (store.structurePositions(id)) |position| {
+        const record = store.structure_records.items[position];
+        if (std.mem.eql(u8, record.structure.kind, expected.kind) and std.mem.eql(u8, record.structure.fingerprint, expected.fingerprint)) return 1;
+    }
     return 0;
 }
 
 fn lineageScore(store: *const store_mod.Store, id: u64) f64 {
     var count: usize = 0;
-    for (store.relations.items) |relation| {
-        if (relation.from == id and relation.kind == .derived_from) count += 1;
+    for (store.relationPositionsFrom(id)) |position| {
+        if (store.relations.items[position].kind == .derived_from) count += 1;
     }
     return @min(1, @as(f64, @floatFromInt(count)) * 0.25);
 }
@@ -83,15 +88,13 @@ fn lineageScore(store: *const store_mod.Store, id: u64) f64 {
 pub fn stability(store: *const store_mod.Store, node: model.Node) model.Stability {
     var support: usize = 0;
     var contradiction: usize = 0;
-    for (store.relations.items) |relation| {
-        if (relation.to != node.id) continue;
+    for (store.relationPositionsTo(node.id)) |position| {
+        const relation = store.relations.items[position];
         if (relation.kind == .supports) support += 1;
         if (relation.kind == .contradicts) contradiction += 1;
     }
     var transitions: usize = 0;
-    for (store.transition_records.items) |record| {
-        if (record.target == node.id) transitions += 1;
-    }
+    transitions = store.transitionPositions(node.id).len;
     if (node.cognitive_state == .contested) return .{ .state = .contested, .score = 0, .support = support, .contradiction = contradiction, .transitions = transitions };
     const evidence = @as(f64, @floatFromInt(support)) / @as(f64, @floatFromInt(support + contradiction + 1));
     const history = @min(1, @as(f64, @floatFromInt(transitions)) / 3);
@@ -102,10 +105,16 @@ pub fn stability(store: *const store_mod.Store, node: model.Node) model.Stabilit
 }
 
 fn graphScore(store: *const store_mod.Store, id: u64, context: model.Context) f64 {
-    for (store.relations.items) |relation| {
-        if (relation.from != id and relation.to != id) continue;
+    for (store.relationPositionsFrom(id)) |position| {
+        const relation = store.relations.items[position];
         if (relation.kind != .causes and relation.kind != .supports) continue;
-        const other = store.constNode(if (relation.from == id) relation.to else relation.from) orelse continue;
+        const other = store.constNode(relation.to) orelse continue;
+        if (context.goal.len > 0 and (has(other.object, context.goal) or has(other.context, context.goal))) return @min(1, relation.weight);
+    }
+    for (store.relationPositionsTo(id)) |position| {
+        const relation = store.relations.items[position];
+        if (relation.kind != .causes and relation.kind != .supports) continue;
+        const other = store.constNode(relation.from) orelse continue;
         if (context.goal.len > 0 and (has(other.object, context.goal) or has(other.context, context.goal))) return @min(1, relation.weight);
     }
     return 0;
@@ -115,9 +124,23 @@ fn contradictionScore(store: *const store_mod.Store, id: u64, context: model.Con
     if (!context.resolve_conflicts) return 0;
     const node = store.constNode(id) orelse return 0;
     var score: f64 = 0;
-    for (store.relations.items) |relation| {
-        if (relation.kind != .contradicts or (relation.from != id and relation.to != id)) continue;
-        const other = store.constNode(if (relation.from == id) relation.to else relation.from) orelse continue;
+    for (store.relationPositionsFrom(id)) |position| {
+        const relation = store.relations.items[position];
+        if (relation.kind != .contradicts) continue;
+        const other = store.constNode(relation.to) orelse continue;
+        var relevance: f64 = 0.35;
+        if (context.situation.len > 0) {
+            if (has(other.context, context.situation)) relevance += 0.35;
+            if (has(node.context, context.situation) and !has(other.context, context.situation)) relevance -= 0.20;
+        }
+        if (context.goal.len > 0 and (has(other.object, context.goal) or has(other.context, context.goal))) relevance += 0.20;
+        if (context.query.len > 0 and (has(other.predicate, context.query) or has(other.object, context.query))) relevance += 0.10;
+        score = @max(score, @min(1, relevance * relation.weight));
+    }
+    for (store.relationPositionsTo(id)) |position| {
+        const relation = store.relations.items[position];
+        if (relation.kind != .contradicts) continue;
+        const other = store.constNode(relation.from) orelse continue;
         var relevance: f64 = 0.35;
         if (context.situation.len > 0) {
             if (has(other.context, context.situation)) relevance += 0.35;

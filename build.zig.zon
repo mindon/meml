@@ -1,8 +1,8 @@
 .{
     .name = .meml,
-    .version = "0.4.0",
+    .version = "0.5.0",
     .fingerprint = 0x3243c1902476d340,
-    .minimum_zig_version = "0.17.0-dev.1941",
+    .minimum_zig_version = "0.17.0-dev.2056",
     .dependencies = .{},
     .paths = .{
         "build.zig",

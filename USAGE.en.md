@@ -383,9 +383,9 @@ Enum values:
 - `outcome`: `success | failure`
 - `failure_class`: `none | timeout | transport | tool_error | invalid_result | policy_denied | unauthorized | cancelled | unknown`
 - `backend`: `vector | graph | hybrid`
-- `providers` entries may be strings or `{ "name":"embedding", "weight":2 }`; `activate` returns a `provider_trace` with each provider's raw `score` and configured `weight`.
+- `providers` entries may be strings or `{ "name":"embedding", "weight":2 }`; `activate` returns a `provider_trace` with each provider's raw `score` and configured `weight`, plus a `scoring_profile` (`id`, `version`) that identifies the ranking configuration.
 
-Text matching uses the shared `tokenizer-ascii-v1`: ASCII case normalization with compatible delimiter tokenization. It deliberately does not infer Chinese/CJK segmentation.
+Text matching uses the shared `meml-tokenizer-unicode-cjk-v2`: ASCII case normalization, compatible delimiter tokenization, and stable per-character CJK tokens. A tokenizer change invalidates an old `.index` checkpoint but not the semantic `MEML15` snapshot; recover the snapshot, call `Runtime.reindex()`, and let the next `persist()` write a fresh checkpoint.
 - `providers` (array): `metadata | embedding | reranker | calibrated | neural`
 
 ### 3.3 Multi-source memory import and default storage

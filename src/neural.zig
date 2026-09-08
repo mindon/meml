@@ -2,22 +2,13 @@ const std = @import("std");
 const model = @import("model.zig");
 const store_mod = @import("store.zig");
 const signals = @import("signals.zig");
+const consolidation = @import("consolidation.zig");
 
-pub const Proposal = struct { subject: []const u8, predicate: []const u8, object: []const u8, context: []const u8, result: []const u8, confidence: f64, source_a: u64, source_b: u64 };
+pub const Proposal = consolidation.Proposal;
 
 /// Neural consolidation never mutates the store directly. It proposes
 /// kernel-native nodes; Runtime commits them and records provenance.
-pub const Consolidator = struct {
-    context: *anyopaque,
-    nameFn: *const fn (*anyopaque) []const u8,
-    proposeFn: *const fn (*anyopaque, *const store_mod.Store, std.mem.Allocator) anyerror!std.ArrayList(Proposal),
-    pub fn name(self: Consolidator) []const u8 {
-        return self.nameFn(self.context);
-    }
-    pub fn propose(self: Consolidator, store: *const store_mod.Store, allocator: std.mem.Allocator) !std.ArrayList(Proposal) {
-        return self.proposeFn(self.context, store, allocator);
-    }
-};
+pub const Consolidator = consolidation.Strategy;
 
 fn nameDeterministic(_: *anyopaque) []const u8 {
     return "deterministic-neural";
@@ -29,7 +20,18 @@ fn proposeDeterministic(_: *anyopaque, store: *const store_mod.Store, allocator:
         for (store.nodes.items[i + 1 ..]) |right| {
             if (right.kind != .claim and right.kind != .evidence and right.kind != .memory) continue;
             if (std.mem.eql(u8, left.subject, right.subject) and std.mem.eql(u8, left.predicate, right.predicate) and std.mem.eql(u8, left.object, right.object)) {
-                try out.append(allocator, .{ .subject = left.subject, .predicate = left.predicate, .object = left.object, .context = left.context, .result = "neural consolidation", .confidence = @min(1, (left.confidence + right.confidence) / 2 + 0.1), .source_a = left.id, .source_b = right.id });
+                try out.append(allocator, .{
+                    .subject = left.subject,
+                    .predicate = left.predicate,
+                    .object = left.object,
+                    .context = left.context,
+                    .result = "neural consolidation",
+                    .confidence = @min(1, (left.confidence + right.confidence) / 2 + 0.1),
+                    .source_a = left.id,
+                    .source_b = right.id,
+                    .rule = "deterministic-neural",
+                    .neural_state = .{ .artifact = 0, .activation_count = 1, .strength = @min(1, (left.confidence + right.confidence) / 2 + 0.1), .version = 1 },
+                });
                 break;
             }
         }

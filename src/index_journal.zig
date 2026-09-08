@@ -1,7 +1,8 @@
 const std = @import("std");
 const store_mod = @import("store.zig");
+const tokenizer = @import("tokenizer.zig");
 
-const Header = "MEMLIDX1";
+const Header = "MEMLIDX2";
 
 fn checkpointName(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}.index", .{path});
@@ -19,6 +20,7 @@ fn parse(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !struct { r
     var fields = std.mem.splitScalar(u8, header, ' ');
     if (!std.mem.eql(u8, fields.next() orelse return error.BadIndexJournal, Header)) return error.BadIndexJournal;
     const revision = std.fmt.parseInt(u64, fields.next() orelse return error.BadIndexJournal, 10) catch return error.BadIndexJournal;
+    if (!std.mem.eql(u8, fields.next() orelse return error.BadIndexJournal, tokenizer.version)) return error.BadIndexJournal;
     if (fields.next() != null) return error.BadIndexJournal;
     var ids = std.ArrayList(u64).empty;
     errdefer ids.deinit(allocator);
@@ -47,7 +49,7 @@ pub fn save(store: *const store_mod.Store, revision: u64, io: std.Io, allocator:
     defer file.close(io);
     var buffer: [4096]u8 = undefined;
     var writer = file.writer(io, &buffer);
-    try writer.interface.print("{s} {d}\n", .{ Header, revision });
+    try writer.interface.print("{s} {d} {s}\n", .{ Header, revision, tokenizer.version });
     for (store.nodes.items) |node| try writer.interface.print("{d}\n", .{node.id});
     try writer.interface.flush();
     try file.sync(io);

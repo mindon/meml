@@ -312,6 +312,12 @@ fn encodeActivation(a: Allocator, runtime: *const meml.Runtime, act: meml.Activa
     var map = ObjectMap.empty;
     try map.put(a, "id", .{ .integer = @intCast(act.id) });
     try map.put(a, "score", .{ .float = act.score });
+    try map.put(a, "scoring_profile", .{ .object = blk: {
+        var profile = ObjectMap.empty;
+        try profile.put(a, "id", .{ .string = act.scoring_profile_id });
+        try profile.put(a, "version", .{ .integer = @intCast(act.scoring_profile_version) });
+        break :blk profile;
+    } });
 
     var sig = ObjectMap.empty;
     try sig.put(a, "semantic", .{ .float = act.signals.semantic });
