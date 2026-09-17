@@ -33,10 +33,15 @@ Pi 会注册 `meml_recall`：恢复已有 `~/.meml/state/pi.state` 后检索，M
 
 ## DeepSeek Harness
 
-插件目录：`integrations/deepseek-harness/meml-plugin/`。将 `cordis.yml` 中的占位符替换为实际绝对路径后，以 Harness patch 加载：
+插件目录：`integrations/deepseek-harness/meml-plugin/`。将 `cordis.patch.yml` 中的占位符替换为实际绝对路径后，以 Harness patch 加载或者安装：
 
 ```sh
-pnpm dsh web --patch /Users/mindon/dev/playground/meml/integrations/deepseek-harness/meml-plugin/cordis.yml
+pnpm dsh web --patch /ABSOLUTE/PATH/TO/meml/integrations/deepseek-harness/meml-plugin/cordis.yml
+```
+
+安装
+```sh
+pnpm dsh plugin --profile web add .
 ```
 
 插件依据 `ctx.tools.register(defineTool(...))` 注册 `meml_recall`；恢复已有 `~/.meml/state/deepseek-harness.state` 后默认只读检索。设置 `MEML_AUTO_PERSIST=true` 才会在卸载时整合并原子保存。`MEML_STATE_PATH` 可覆盖该位置。

@@ -1,0 +1,3 @@
+- insert:
+    - id: meml-memory
+      name: '/Users/mindon/dev/playground/meml/integrations/deepseek-harness/meml-plugin/src/index.ts'

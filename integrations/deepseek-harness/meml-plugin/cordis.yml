@@ -1,3 +1,0 @@
-- insert:
-    - id: meml-memory
-      name: '/ABSOLUTE/PATH/TO/meml/integrations/deepseek-harness/meml-plugin/src/index.ts'
