@@ -6,3 +6,4 @@ work/
 .*/
 !.github/
 *.state*
+node_modules/
