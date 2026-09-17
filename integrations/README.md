@@ -5,7 +5,7 @@
 ## 前置条件
 
 ```sh
-cd /Users/mindon/dev/playground/meml
+cd /ABSOLUTE/PATH/TO/meml
 zig build
 export MEML_BIN="$PWD/zig-out/bin/meml"
 ```
@@ -24,7 +24,7 @@ export MEML_BIN="$PWD/zig-out/bin/meml"
 将整个 `integrations/` 目录保留在本地，然后把 Pi 扩展指向以下绝对路径：
 
 ```text
-/Users/mindon/dev/playground/meml/integrations/pi/meml-plugin/src/index.ts
+/ABSOLUTE/PATH/TO/meml/integrations/pi/meml-plugin/src/index.ts
 ```
 
 Pi 会注册 `meml_recall`：恢复已有 `~/.meml/state/pi.state` 后检索，MCP recall 默认不整合、不持久化。设置 `MEML_AUTO_PERSIST=true` 才会在关闭时整合并原子保存。`MEML_STATE_PATH` 可覆盖该位置。该插件通过相对路径复用 `integrations/meml-client.ts`，如需迁移目录，应一并迁移整个 `integrations/` 目录或同步调整该导入。
@@ -62,7 +62,7 @@ Claude Code 插件位于 `integrations/claude-code/meml-plugin/`，包含插件 
 
 ```sh
 export MEML_BIN="/absolute/path/to/meml/zig-out/bin/meml"
-claude --plugin-dir /Users/mindon/dev/playground/meml/integrations/claude-code/meml-plugin
+claude --plugin-dir /ABSOLUTE/PATH/TO/meml/integrations/claude-code/meml-plugin
 ```
 
 插件会通过 `${CLAUDE_PLUGIN_ROOT}/scripts/meml-mcp.mjs` 复用共享 MCP server，并从 `~/.meml/state/claude-code.state` 恢复已有记忆；默认关闭时不整合、不持久化，设置 `MEML_AUTO_PERSIST=true` 才启用更新。`MEML_STATE_PATH` 可覆盖该位置。修改插件组件后，在 Claude Code 中执行 `/reload-plugins`。
@@ -70,7 +70,7 @@ claude --plugin-dir /Users/mindon/dev/playground/meml/integrations/claude-code/m
 若只需 MCP 而不加载插件，可使用：
 
 ```sh
-claude mcp add --scope project --transport stdio meml -- node /Users/mindon/dev/playground/meml/integrations/mcp/meml-mcp.mjs
+claude mcp add --scope project --transport stdio meml -- node /ABSOLUTE/PATH/TO/meml/integrations/mcp/meml-mcp.mjs
 ```
 
 此方式同样要求启动 Claude Code 前设置 `MEML_BIN`。插件与 MCP server 都应仅从可信本地路径加载。
