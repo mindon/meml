@@ -33,7 +33,13 @@ Pi 会注册 `meml_recall`：恢复已有 `~/.meml/state/pi.state` 后检索，M
 
 ## DeepSeek Harness
 
-插件目录：`integrations/deepseek-harness/meml-plugin/`。将 `cordis.patch.yml` 中的占位符替换为实际绝对路径后，以 Harness patch 加载或者安装：
+插件目录：`integrations/deepseek-harness/meml-plugin/`。将 `cordis.patch.yml` 中的占位符替换为实际绝对路径后，build，然后以 Harness patch 加载或者安装：
+
+build
+```sh
+pnpm install
+pnpm build
+```
 
 ```sh
 pnpm dsh web --patch /ABSOLUTE/PATH/TO/meml/integrations/deepseek-harness/meml-plugin/cordis.yml

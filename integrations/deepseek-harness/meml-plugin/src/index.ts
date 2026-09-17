@@ -1,7 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { homedir } from "node:os";
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { MemlClient } from "../../../meml-client.ts";
+import { MemlClient } from "./meml-client.ts";
 
 const automaticLifecycle = /^(1|true|yes)$/i.test(process.env.MEML_AUTO_PERSIST ?? "");
 
@@ -19,9 +19,9 @@ export function apply(ctx: Context): void {
     description: "Retrieve relevant, explainable MEML long-term memory before planning. This tool is read-only by default; set MEML_AUTO_PERSIST=true only when the host should consolidate and persist on shutdown. It never executes actions.",
     parameters: {
       query: { type: "string", required: true, description: "Current task or question." },
-      goal: { type: "string", required: false, description: "Optional intended outcome." },
-      situation: { type: "string", required: false, description: "Optional project or execution context." },
-      limit: { type: "number", required: false, description: "Maximum memories to return, from 1 to 20." },
+      goal: { type: "string", description: "Optional intended outcome." },
+      situation: { type: "string", description: "Optional project or execution context." },
+      limit: { type: "number", description: "Maximum memories to return, from 1 to 20." },
     },
     output: {
       schema: { type: "string" },

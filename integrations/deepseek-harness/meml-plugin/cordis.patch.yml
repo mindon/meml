@@ -1,3 +1,3 @@
 - insert:
     - id: meml-memory
-      name: '/ABSOLUTE/PATH/TO/meml/integrations/deepseek-harness/meml-plugin/src/index.ts'
+      name: '/ABSOLUTE/PATH/TO/meml/integrations/deepseek-harness/meml-plugin/lib/index.js'
